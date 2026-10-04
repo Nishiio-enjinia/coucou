@@ -20,6 +20,13 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// "system", "en" or "fr". Missing on older settings files means system.
+    #[serde(default = "default_language")]
+    pub language: String,
+}
+
+fn default_language() -> String {
+    "system".into()
 }
 
 fn default_model() -> String {
@@ -43,6 +50,7 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            language: default_language(),
         }
     }
 }

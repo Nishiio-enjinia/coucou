@@ -3,6 +3,7 @@
 mod claude;
 mod files;
 mod hooks;
+mod i18n;
 mod integrations;
 mod island;
 mod log;
@@ -61,15 +62,20 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
-    let (screen_changed, autostart_changed) = {
+    let (screen_changed, autostart_changed, language_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let language_changed = current.language != settings.language;
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        (screen_changed, autostart_changed, language_changed)
     };
     if let Err(err) = settings::save(&settings) {
         eprintln!("[coucou] could not save settings: {err}");
+    }
+    if language_changed {
+        crate::i18n::set_preference(&settings.language);
+        tray::refresh(&app);
     }
     if autostart_changed {
         let manager = app.autolaunch();
@@ -321,7 +327,7 @@ fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
-        .title("Settings — Coucou")
+        .title(i18n::t("settings.windowTitle"))
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
@@ -404,6 +410,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            crate::i18n::set_preference(&loaded.language);
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);

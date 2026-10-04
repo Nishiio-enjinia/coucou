@@ -4,13 +4,67 @@
 
 import "./settings.css";
 import { Bridge, onEvent, type HookStatus } from "../core/bridge";
+import { applyLanguage, t } from "../core/i18n";
 import { DEFAULT_SETTINGS, type Settings } from "../core/state";
 import { h, clear } from "../views/dom";
 
-let settings: Settings = { ...DEFAULT_SETTINGS };
-let version = "";
+document.title = "Coucou";
+const bootLabel = document.querySelector("#settings-root p");
+if (bootLabel) bootLabel.textContent = "…";
 
 const root = document.getElementById("settings-root")!;
+
+let settings: Settings = { ...DEFAULT_SETTINGS };
+let version = "";
+let hookStatus: HookStatus = {
+  installed: false, settingsPath: "", hookPath: "", hookReady: false,
+};
+let hasKey = false;
+let secretsPresent: Record<string, boolean> = {};
+
+function paint() {
+  applyLanguage(settings.language);
+  document.title = t("settings.windowTitle");
+  clear(root);
+  root.append(
+    h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
+    claudeSection(hookStatus),
+    apiSection(hasKey),
+    integrationsSection(secretsPresent),
+    generalSection(),
+    h("div", {
+      class: "hint",
+      text: t("settings.privacy"),
+    }),
+  );
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const boot = await Bridge.boot();
+  if (boot) {
+    settings = { ...settings, ...boot.settings };
+    version = boot.version;
+  }
+  hookStatus = (await Bridge.hooksStatus()) ?? hookStatus;
+
+  hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
+
+  const keys = [
+    "stripe-api-key", "github-token", "vercel-token",
+    "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+  ];
+  for (const k of keys) secretsPresent[k] = (await Bridge.secretPresent(k)) ?? false;
+
+  paint();
+
+  void onEvent<Settings>("settings-changed", (s) => {
+    const previous = settings.language;
+    settings = { ...settings, ...s };
+    if (settings.language !== previous) paint();
+  });
+}
 
 async function save() {
   await Bridge.saveSettings(settings);
@@ -66,16 +120,14 @@ function claudeSection(status: HookStatus): HTMLElement {
     body.append(
       h("div", {
         class: "hint",
-        text: status.installed
-          ? "Coucou is hooked into your Claude Code sessions. Tool calls, questions and permission requests show up in the island, and you can answer them there."
-          : "Install the hooks to see your Claude Code sessions in the island and approve permissions without leaving what you are doing.",
+        text: status.installed ? t("hooks.installed") : t("hooks.notInstalled"),
       }),
       h("div", { class: "row" },
         h("label", { text: "settings.json" }),
         h("span", { class: "path", text: status.settingsPath }),
       ),
       h("div", { class: "row" },
-        h("label", { text: "Relay" }),
+        h("label", { text: t("hooks.relay") }),
         h("span", { class: "path", text: status.hookPath }),
         statusDot(status.hookReady),
       ),
@@ -84,27 +136,27 @@ function claudeSection(status: HookStatus): HTMLElement {
     if (!status.hookReady) {
       body.append(h("div", {
         class: "notice warn",
-        text: "coucou-hook.exe is not in place yet. Restart Coucou; if it still fails, build it with `cargo build -p coucou-hook`.",
+        text: t("hooks.missingExe"),
       }));
     }
 
     const actions = h("div", { class: "row" });
     const install = h("button", {
       class: "primary",
-      text: status.installed ? "Reinstall hooks…" : "Install hooks…",
+      text: status.installed ? t("hooks.reinstall") : t("hooks.installDots"),
       onclick: () => showPreview(true),
     });
     // Writing hook commands that point at a relay which isn't there would give
     // every Claude Code session a broken hook and nothing to show for it.
     if (!status.hookReady) {
       install.disabled = true;
-      install.title = "The relay isn't installed yet.";
+      install.title = t("hooks.relayMissingTitle");
     }
     actions.append(install);
     if (status.installed) {
       actions.append(h("button", {
         class: "danger",
-        text: "Uninstall hooks…",
+        text: t("hooks.uninstallDots"),
         onclick: () => showPreview(false),
       }));
     }
@@ -122,7 +174,7 @@ function claudeSection(status: HookStatus): HTMLElement {
       body.append(
         h("div", { class: "notice err", text: String(err).replace(/^Error:\s*/, "") }),
         h("div", { class: "row" }, h("button", {
-          text: "Back",
+          text: t("common.back"),
           onclick: () => { clear(body); draw(); },
         })),
       );
@@ -133,18 +185,16 @@ function claudeSection(status: HookStatus): HTMLElement {
     body.append(
       h("div", {
         class: "hint",
-        text: install
-          ? "This is exactly what will change in your settings.json. Your own hooks are left untouched."
-          : "This removes Coucou's entries only. Your own hooks are left untouched.",
+        text: install ? t("hooks.previewInstall") : t("hooks.previewRemove"),
       }),
       renderDiff(preview.diff),
       h("div", { class: "row" },
-        h("span", { class: "path", text: `Backup → ${preview.backup}` }),
+        h("span", { class: "path", text: t("hooks.backup", { path: preview.backup }) }),
       ),
     );
     const confirm = h("button", {
       class: install ? "primary" : "danger",
-      text: install ? "Back up and write" : "Back up and remove",
+      text: install ? t("hooks.backupWrite") : t("hooks.backupRemove"),
     });
     confirm.addEventListener("click", async () => {
       confirm.disabled = true;
@@ -153,16 +203,16 @@ function claudeSection(status: HookStatus): HTMLElement {
         clear(body);
         body.append(h("div", {
           class: "notice ok",
-          text: `Done. Previous settings saved as ${backup}. Open a new Claude Code session to pick the hooks up.`,
+          text: t("hooks.done", { backup }),
         }));
         window.setTimeout(() => void rebuild(), 2600);
       } catch (err) {
         confirm.disabled = false;
-        body.append(h("div", { class: "notice err", text: `Could not write: ${String(err)}` }));
+        body.append(h("div", { class: "notice err", text: t("hooks.writeFailed", { error: String(err) }) }));
       }
     });
     body.append(h("div", { class: "row" }, confirm, h("button", {
-      text: "Cancel",
+      text: t("common.cancel"),
       onclick: () => { clear(body); draw(); },
     })));
   }
@@ -181,27 +231,25 @@ const MODELS: [string, string][] = [
 
 function apiSection(hasKey: boolean): HTMLElement {
   const dot = statusDot(hasKey);
-  const state = h("span", { class: "hint", text: hasKey ? "Key saved in the Windows Credential Manager." : "No key yet — the chat needs one." });
+  const state = h("span", { class: "hint", text: hasKey ? t("chat.keySavedWin") : t("chat.noKey") });
 
   const field = h("input", {
     type: "password",
-    placeholder: hasKey ? "••••••••••••  (stored)" : "sk-ant-...",
+    placeholder: hasKey ? t("chat.stored") : "sk-ant-...",
     style: "flex:1 1 auto;min-width:0",
     autocomplete: "off",
     spellcheck: "false",
   }) as HTMLInputElement;
 
-  const saveBtn = h("button", { class: "primary", text: "Save key" });
-  const clearBtn = h("button", { class: "danger", text: "Remove" });
+  const saveBtn = h("button", { class: "primary", text: t("chat.saveKey") });
+  const clearBtn = h("button", { class: "danger", text: t("common.remove") });
   const feedback = h("div", {});
 
   async function refresh() {
     const present = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
     dot.style.background = present ? "#22c55e" : "#f4505e";
-    state.textContent = present
-      ? "Key saved in the Windows Credential Manager."
-      : "No key yet — the chat needs one.";
-    field.placeholder = present ? "••••••••••••  (stored)" : "sk-ant-...";
+    state.textContent = present ? t("chat.keySavedWin") : t("chat.noKey");
+    field.placeholder = present ? t("chat.stored") : "sk-ant-...";
     clearBtn.style.display = present ? "" : "none";
   }
 
@@ -212,10 +260,10 @@ function apiSection(hasKey: boolean): HTMLElement {
     try {
       await Bridge.secretSet("anthropic-api-key", value);
       field.value = "";
-      feedback.append(h("div", { class: "notice ok", text: "Saved. It never touches disk." }));
+      feedback.append(h("div", { class: "notice ok", text: t("chat.savedDisk") }));
       await refresh();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: `Could not save: ${String(err)}` }));
+      feedback.append(h("div", { class: "notice err", text: t("chat.saveFailed", { error: String(err) }) }));
     }
   });
 
@@ -223,10 +271,10 @@ function apiSection(hasKey: boolean): HTMLElement {
     clear(feedback);
     try {
       await Bridge.secretClear("anthropic-api-key");
-      feedback.append(h("div", { class: "notice ok", text: "Key removed." }));
+      feedback.append(h("div", { class: "notice ok", text: t("chat.keyRemoved") }));
       await refresh();
     } catch (err) {
-      feedback.append(h("div", { class: "notice err", text: `Could not remove: ${String(err)}` }));
+      feedback.append(h("div", { class: "notice err", text: t("chat.removeFailed", { error: String(err) }) }));
     }
   });
 
@@ -248,8 +296,8 @@ function apiSection(hasKey: boolean): HTMLElement {
     {},
     h("h2", {}, dot, h("span", { text: "Claude" })),
     state,
-    h("div", { class: "row" }, h("label", { text: "API key" }), field, saveBtn, clearBtn),
-    h("div", { class: "row" }, h("label", { text: "Model" }), model),
+    h("div", { class: "row" }, h("label", { text: t("chat.key") }), field, saveBtn, clearBtn),
+    h("div", { class: "row" }, h("label", { text: t("chat.model") }), model),
     feedback,
   );
 }
@@ -264,25 +312,27 @@ interface IntegrationDef {
   fields: { key: string; label: string; placeholder: string; secret: boolean }[];
 }
 
-const INTEGRATIONS: IntegrationDef[] = [
+function integrationDefs(): IntegrationDef[] {
+  return [
   { id: "integration_stripe", name: "Stripe", color: "#0570DE",
-    fields: [{ key: "stripe-api-key", label: "Secret key", placeholder: "sk_live_…", secret: true }] },
+    fields: [{ key: "stripe-api-key", label: t("int.secret"), placeholder: "sk_live_…", secret: true }] },
   { id: "integration_github", name: "GitHub", color: "#F4505E",
-    fields: [{ key: "github-token", label: "Token", placeholder: "ghp_…", secret: true }] },
+    fields: [{ key: "github-token", label: t("int.token"), placeholder: "ghp_…", secret: true }] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
-    fields: [{ key: "vercel-token", label: "Token", placeholder: "…", secret: true }] },
+    fields: [{ key: "vercel-token", label: t("int.token"), placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
     fields: [
-      { key: "n8n-url", label: "Instance URL", placeholder: "https://n8n.example.com", secret: false },
-      { key: "n8n-api-key", label: "API key", placeholder: "…", secret: true },
+      { key: "n8n-url", label: t("int.instanceUrl"), placeholder: "https://n8n.example.com", secret: false },
+      { key: "n8n-api-key", label: t("chat.key"), placeholder: "…", secret: true },
     ] },
   { id: "integration_resend", name: "Resend", color: "#22C55E",
-    fields: [{ key: "resend-api-key", label: "API key", placeholder: "re_…", secret: true }] },
+    fields: [{ key: "resend-api-key", label: t("chat.key"), placeholder: "re_…", secret: true }] },
   { id: "integration_notion", name: "Notion", color: "#8C8C8C",
-    fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
+    fields: [{ key: "notion-api-key", label: t("int.integrationToken"), placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
-    fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
-];
+    fields: [{ key: "calcom-api-key", label: t("chat.key"), placeholder: "cal_…", secret: true }] },
+  ];
+}
 
 const MAX_ACTIVE = 4;
 
@@ -292,10 +342,10 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
 
   function updateNote() {
     const used = settings.activeIntegrations.length;
-    note.textContent = `Pick up to ${MAX_ACTIVE} pills to show next to Mochi — ${used}/${MAX_ACTIVE} in use. Keys are stored in the Windows Credential Manager, never on disk.`;
+    note.textContent = t("int.pick", { max: MAX_ACTIVE, used });
   }
 
-  for (const def of INTEGRATIONS) {
+  for (const def of integrationDefs()) {
     const active = settings.activeIntegrations.includes(def.id);
     const sw = h("button", { class: active ? "switch on" : "switch" });
     sw.addEventListener("click", () => {
@@ -315,12 +365,12 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     for (const field of def.fields) {
       const input = h("input", {
         type: field.secret ? "password" : "text",
-        placeholder: present[field.key] ? "••••••••  (stored)" : field.placeholder,
+        placeholder: present[field.key] ? t("chat.storedShort") : field.placeholder,
         autocomplete: "off",
         spellcheck: "false",
         style: "flex:1 1 auto;min-width:0",
       }) as HTMLInputElement;
-      const saveBtn = h("button", { text: "Save" });
+      const saveBtn = h("button", { text: t("common.save") });
       const dotEl = statusDot(present[field.key] ?? false);
       saveBtn.addEventListener("click", async () => {
         const value = input.value.trim();
@@ -328,7 +378,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
           await Bridge.secretSet(field.key, value);
           present[field.key] = value.length > 0;
           input.value = "";
-          input.placeholder = value ? "••••••••  (stored)" : field.placeholder;
+          input.placeholder = value ? t("chat.storedShort") : field.placeholder;
           dotEl.style.background = value ? "#22c55e" : "#f4505e";
         } catch {
           dotEl.style.background = "#f5a524";
@@ -355,7 +405,7 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
   }
 
   updateNote();
-  return h("section", {}, h("h2", {}, h("span", { text: "Integrations" })), note, list);
+  return h("section", {}, h("h2", {}, h("span", { text: t("settings.integrations") })), note, list);
 }
 
 // ── General section ───────────────────────────────────────────────────────────
@@ -383,8 +433,8 @@ function generalSection(): HTMLElement {
 
   const screen = h("select", {}) as HTMLSelectElement;
   screen.append(
-    h("option", { value: "primary", text: "Main display" }),
-    h("option", { value: "cursor", text: "Display under the cursor" }),
+    h("option", { value: "primary", text: t("settings.screenPrimary") }),
+    h("option", { value: "cursor", text: t("settings.screenCursor") }),
   );
   screen.value = settings.screen;
   screen.addEventListener("change", () => {
@@ -392,68 +442,49 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  const language = h("select", {}) as HTMLSelectElement;
+  language.append(
+    h("option", { value: "system", text: t("settings.languageSystem") }),
+    h("option", { value: "fr", text: "Français" }),
+    h("option", { value: "en", text: "English" }),
+  );
+  language.value = settings.language;
+  language.addEventListener("change", () => {
+    const value = language.value;
+    const next = value === "en" || value === "fr" ? value : "system";
+    if (next === settings.language) return;
+    settings.language = next;
+    void save();
+    paint();
+  });
+
   return h(
     "section",
     {},
-    h("h2", {}, h("span", { text: "General" })),
+    h("h2", {}, h("span", { text: t("settings.general") })),
     h("div", { class: "row" },
-      h("label", { text: "Sound" }),
+      h("label", { text: t("settings.language") }),
+      language,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: t("settings.sound") }),
       toggle(settings.soundEnabled, (v) => { settings.soundEnabled = v; void save(); }),
       volume,
     ),
     h("div", { class: "row" },
-      h("label", { text: "Auto-close" }),
+      h("label", { text: t("settings.autoCloseLabel") }),
       autoClose,
-      h("span", { class: "hint", text: "seconds after you leave the island" }),
+      h("span", { class: "hint", text: t("settings.autoCloseHint") }),
     ),
     h("div", { class: "row" },
-      h("label", { text: "Island lives on" }),
+      h("label", { text: t("settings.screen") }),
       screen,
     ),
     h("div", { class: "row" },
-      h("label", { text: "Launch at startup" }),
+      h("label", { text: t("settings.launch") }),
       toggle(settings.autostart, (v) => { settings.autostart = v; void save(); }),
     ),
   );
-}
-
-// ── Boot ──────────────────────────────────────────────────────────────────────
-
-async function main() {
-  const boot = await Bridge.boot();
-  if (boot) {
-    settings = { ...settings, ...boot.settings };
-    version = boot.version;
-  }
-  const status = (await Bridge.hooksStatus()) ?? {
-    installed: false, settingsPath: "", hookPath: "", hookReady: false,
-  };
-
-  const hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
-
-  const keys = [
-    "stripe-api-key", "github-token", "vercel-token",
-    "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
-  ];
-  const present: Record<string, boolean> = {};
-  for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;
-
-  clear(root);
-  root.append(
-    h("h1", {}, h("span", { text: "Coucou" }), h("span", { class: "version", text: version })),
-    claudeSection(status),
-    apiSection(hasKey),
-    integrationsSection(present),
-    generalSection(),
-    h("div", {
-      class: "hint",
-      text: "No telemetry. Network requests only go to the services you configure yourself.",
-    }),
-  );
-
-  void onEvent<Settings>("settings-changed", (s) => {
-    settings = { ...settings, ...s };
-  });
 }
 
 void main();

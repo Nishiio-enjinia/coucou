@@ -15,7 +15,7 @@ struct ClaudePlanCardView: View {
                 Circle()
                     .fill(Color(hex: ClaudePlanGauge.color(for: dominant)))
                     .frame(width: 7, height: 7)
-                Text("Claude plan")
+                Text(L10n.t("plan.card"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
                 Text(subtitleText)
@@ -48,12 +48,12 @@ struct ClaudePlanCardView: View {
     }
 
     private var subtitleText: String {
-        guard let usage else { return "Waiting for a Claude Code reply" }
+        guard let usage else { return L10n.t("time.waiting") }
         let diff = now.timeIntervalSince(usage.updatedAt)
-        if diff < 60 { return "just now" }
+        if diff < 60 { return L10n.t("time.now") }
         let mins = Int(diff / 60)
-        if mins < 60 { return "\(mins) min ago" }
-        return "\(mins / 60) h ago"
+        if mins < 60 { return L10n.t("time.minAgo", ["n": "\(mins)"]) }
+        return L10n.t("time.hourAgo", ["n": "\(mins / 60)"])
     }
 }
 

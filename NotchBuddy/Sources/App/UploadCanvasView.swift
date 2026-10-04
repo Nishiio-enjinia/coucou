@@ -160,7 +160,7 @@ struct UploadCanvasView: View {
         var tCtx = ctx
         tCtx.opacity = f.textAlpha
 
-        let label = Text("Drop your files here")
+        let label = Text(L10n.t("upload.drop"))
             .font(.system(size:13, weight:.medium))
             .foregroundColor(Color(hex:"#D5D7DB"))
         tCtx.draw(label, at: CGPoint(x: USC.TEXT_X, y: USC.TEXT_Y - 4), anchor: .leading)
@@ -188,8 +188,8 @@ struct UploadCanvasView: View {
         let barLen = (x1-x0) * f.barReveal
 
         // Filename label
-        let name = state.droppedFile?.name ?? "file"
-        let label = Text("Uploading \(name)")
+        let name = state.droppedFile?.name ?? L10n.t("upload.file")
+        let label = Text(L10n.t("upload.uploading", ["name": name]))
             .font(.system(size:12.5, weight:.medium))
             .foregroundColor(Color(hex:"#A9ADB5"))
         pCtx.draw(label, at: CGPoint(x: x0, y: by-30), anchor: .leading)
@@ -262,13 +262,13 @@ struct UploadCanvasView: View {
         // Slide up: translate down by (1-alpha)*4
         cCtx.concatenate(CGAffineTransform(translationX: 0, y: CGFloat((1-f.chooseAlpha)*4)))
 
-        let name = state.droppedFile?.name ?? "file"
-        let titleText = Text("\(name) is ready.")
+        let name = state.droppedFile?.name ?? L10n.t("upload.file")
+        let titleText = Text("\(name)\(L10n.t("upload.readySuffix"))")
             .font(.system(size:14, weight:.semibold))
             .foregroundColor(Color(hex:"#F5F6F8"))
         cCtx.draw(titleText, at: CGPoint(x:114, y:80), anchor: .leading)
 
-        let subText = Text("What do you want to do with it?")
+        let subText = Text(L10n.t("upload.what"))
             .font(.system(size:12.5))
             .foregroundColor(Color(hex:"#9398A1"))
         cCtx.draw(subText, at: CGPoint(x:114, y:100), anchor: .leading)
@@ -276,7 +276,7 @@ struct UploadCanvasView: View {
         // Primary button (white fill)
         cCtx.fill(roundedRect(CGRect(x:114,y:113,width:168,height:26), r:13),
                   with: .color(Color(hex:"#F5F6F8")))
-        let btn1 = Text("Ask a question about it")
+        let btn1 = Text(L10n.t("upload.askAbout"))
             .font(.system(size:12.5, weight:.medium))
             .foregroundColor(Color(red:0.043,green:0.047,blue:0.055))
         cCtx.draw(btn1, at: CGPoint(x:198, y:126), anchor: .center)
@@ -284,7 +284,7 @@ struct UploadCanvasView: View {
         // Secondary button (dim fill)
         cCtx.fill(roundedRect(CGRect(x:290,y:113,width:120,height:26), r:13),
                   with: .color(Color.white.opacity(0.09)))
-        let btn2 = Text("Send by email")
+        let btn2 = Text(L10n.t("upload.email"))
             .font(.system(size:12.5, weight:.medium))
             .foregroundColor(Color(hex:"#F1F2F4"))
         cCtx.draw(btn2, at: CGPoint(x:350, y:126), anchor: .center)

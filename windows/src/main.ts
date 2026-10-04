@@ -2,6 +2,7 @@
 
 import "./style.css";
 import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
+import { applyLanguage } from "./core/i18n";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
@@ -14,12 +15,13 @@ async function main() {
 
   void Sound.preload();
 
-  const island = new Island(root);
-
   const boot = await Bridge.boot();
   if (boot) {
     State.settings = { ...State.settings, ...boot.settings };
   }
+  applyLanguage(State.settings.language);
+
+  const island = new Island(root);
   island.applySettings();
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
@@ -55,7 +57,12 @@ async function main() {
 
   // The settings window writes preferences; apply them here without a restart.
   await onEvent<Settings>("settings-changed", (s) => {
+    const previous = State.settings.language;
     State.settings = { ...State.settings, ...s };
+    if (State.settings.language !== previous) {
+      applyLanguage(State.settings.language);
+      island.relocalize();
+    }
     island.applySettings();
     State.loadIntegrationTasks();
     void refreshConfigured();

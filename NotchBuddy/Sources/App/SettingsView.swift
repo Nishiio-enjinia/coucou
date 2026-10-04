@@ -129,11 +129,11 @@ struct SettingsView: View {
                         get: { Optional(selectedSection) },
                         set: { if let v = $0 { selectedSection = v; statusMessage = "" } }
                     )) {
-                        SettingsSidebarRow(title: "General",      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
-                        SettingsSidebarRow(title: "Active pills", icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
-                        SettingsSidebarRow(title: "Agents",       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
-                        SettingsSidebarRow(title: "Chat",         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
-                        SettingsSidebarRow(title: "Integrations", icon: "puzzlepiece.extension.fill",        color: "#7C5CFF").tag("integrations")
+                        SettingsSidebarRow(title: L10n.t("settings.general"),      icon: "gearshape.fill",                    color: "#8E939C").tag("general")
+                        SettingsSidebarRow(title: L10n.t("settings.activePills"), icon: "square.grid.2x2.fill",              color: "#F5A524").tag("activepills")
+                        SettingsSidebarRow(title: L10n.t("settings.agents"),       icon: "terminal.fill",                     color: "#3B9EFF").tag("agents")
+                        SettingsSidebarRow(title: L10n.t("settings.chat"),         icon: "bubble.left.and.bubble.right.fill", color: "#E07950").tag("chat")
+                        SettingsSidebarRow(title: L10n.t("settings.integrations"), icon: "puzzlepiece.extension.fill",        color: "#7C5CFF").tag("integrations")
                     }
                     .listStyle(.sidebar)
                     .scrollContentBackground(.hidden)
@@ -196,12 +196,12 @@ struct SettingsView: View {
 
     private var sectionTitle: String {
         switch selectedSection {
-        case "general":      return "General"
-        case "activepills":  return "Active pills"
-        case "agents":       return "Agents"
-        case "chat":         return "Chat"
-        case "integrations": return "Integrations"
-        default:             return "General"
+        case "general":      return L10n.t("settings.general")
+        case "activepills":  return L10n.t("settings.activePills")
+        case "agents":       return L10n.t("settings.agents")
+        case "chat":         return L10n.t("settings.chat")
+        case "integrations": return L10n.t("settings.integrations")
+        default:             return L10n.t("settings.general")
         }
     }
 
@@ -218,11 +218,21 @@ struct SettingsView: View {
     // MARK: - General section
 
     @ViewBuilder private var generalSection: some View {
-        GroupBox("Sound") {
+        GroupBox(L10n.t("settings.language")) {
+            Picker(L10n.t("settings.language"), selection: $state.uiLanguage) {
+                Text(L10n.t("settings.languageSystem")).tag("system")
+                Text("Français").tag("fr")
+                Text("English").tag("en")
+            }
+            .labelsHidden()
+            .padding(6)
+        }
+
+        GroupBox(L10n.t("settings.sound")) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Enable sounds", isOn: $state.soundEnabled)
+                Toggle(L10n.t("settings.enableSounds"), isOn: $state.soundEnabled)
                 HStack(spacing: 8) {
-                    Text("Volume")
+                    Text(L10n.t("settings.volume"))
                         .frame(width: 56, alignment: .leading)
                     Slider(value: $state.soundVolume, in: 0...0.2)
                         .disabled(!state.soundEnabled)
@@ -234,37 +244,37 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Behavior") {
+        GroupBox(L10n.t("settings.behavior")) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Text("Close after")
+                    Text(L10n.t("settings.closeAfter"))
                     TextField("60", value: $state.autoCloseInterval, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 64)
-                    Text("s inactive")
+                    Text(L10n.t("settings.inactive"))
                 }
                 HStack(spacing: 8) {
-                    Text("Hide after")
+                    Text(L10n.t("settings.hideAfter"))
                     TextField("3", value: absenceMinutes, format: .number)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 48)
-                    Text("min without movement")
+                    Text(L10n.t("settings.noMovement"))
                 }
             }
             .padding(6)
         }
 
-        GroupBox("Hotkey") {
+        GroupBox(L10n.t("settings.hotkeyTitle")) {
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Show island with shortcut", isOn: $state.hotkeyEnabled)
+                Toggle(L10n.t("settings.hotkeyToggle"), isOn: $state.hotkeyEnabled)
                 if state.hotkeyEnabled {
                     HStack(spacing: 8) {
-                        Text("Shortcut")
+                        Text(L10n.t("settings.shortcut"))
                             .frame(width: 70, alignment: .leading)
                         ShortcutRecorderButton(flags: $hotkeyFlags, code: $hotkeyCode)
                             .onChange(of: hotkeyFlags) { _, v in state.hotkeyFlags = v }
                             .onChange(of: hotkeyCode)  { _, v in state.hotkeyCode  = v }
-                        Text("presses this → island opens")
+                        Text(L10n.t("settings.hotkeyHint"))
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
                     }
@@ -273,8 +283,8 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Startup") {
-            Toggle("Launch at Mac startup", isOn: $launchAtStartup)
+        GroupBox(L10n.t("settings.startup")) {
+            Toggle(L10n.t("settings.launchMac"), isOn: $launchAtStartup)
                 .onChange(of: launchAtStartup) { _, on in toggleStartup(on) }
                 .padding(6)
         }
@@ -285,11 +295,11 @@ struct SettingsView: View {
     @ViewBuilder private var activePillsSection: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Choose the tools you use. Coucou only shows what you declare here.")
+                Text(L10n.t("pills.choose"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
 
-                Text("\(state.activeIntegrations.count)/4 slots used")
+                Text(L10n.t("pills.slots", ["used": "\(state.activeIntegrations.count)"]))
                     .font(.system(size: 11))
                     .foregroundColor(state.activeIntegrations.count >= 4 ? .orange : .secondary)
 
@@ -308,7 +318,7 @@ struct SettingsView: View {
                     let catPills = PillCatalog.available.filter { $0.category == cat }
                     if !catPills.isEmpty {
                         Divider()
-                        Text(cat.title)
+                        Text(L10n.pillCategory(cat.rawValue))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundColor(.secondary)
                         ForEach(catPills, id: \.id) { def in
@@ -324,20 +334,20 @@ struct SettingsView: View {
     // MARK: - Agents section
 
     @ViewBuilder private var agentsSection: some View {
-        GroupBox("Claude Code Hooks") {
+        GroupBox(L10n.t("hooks.claude")) {
             VStack(alignment: .leading, spacing: 10) {
                 if hookNeedsUpdate {
                     HStack(spacing: 6) {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundColor(.orange)
-                        Text("Hooks outdated — update them to answer Claude's questions from the notch")
+                        Text(L10n.t("hooks.outdated"))
                             .font(.system(size: 11))
                             .foregroundColor(.orange)
                     }
                     #if APPSTORE
-                    Button("Update hooks") { installHooksAppStore() }
+                    Button(L10n.t("hooks.update")) { installHooksAppStore() }
                     #else
-                    Button("Update hooks") { installHooks() }
+                    Button(L10n.t("hooks.update")) { installHooks() }
                     #endif
                 }
                 #if APPSTORE
@@ -345,9 +355,9 @@ struct SettingsView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 HStack(spacing: 10) {
-                    Button("Install hooks") { installHooksAppStore() }
+                    Button(L10n.t("hooks.install")) { installHooksAppStore() }
                         .buttonStyle(.borderedProminent)
-                    Button("Uninstall") { uninstallHooksAppStore() }
+                    Button(L10n.t("hooks.uninstall")) { uninstallHooksAppStore() }
                         .buttonStyle(.bordered)
                 }
                 #else
@@ -355,9 +365,9 @@ struct SettingsView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 HStack(spacing: 10) {
-                    Button("Install hooks") { installHooks() }
+                    Button(L10n.t("hooks.install")) { installHooks() }
                         .buttonStyle(.borderedProminent)
-                    Button("Uninstall") { uninstallHooks() }
+                    Button(L10n.t("hooks.uninstall")) { uninstallHooks() }
                         .buttonStyle(.bordered)
                 }
                 #endif
@@ -374,9 +384,9 @@ struct SettingsView: View {
                     .cornerRadius(6)
 
                     HStack {
-                        Button("Confirm & write") { confirmInstall() }
+                        Button(L10n.t("hooks.confirm")) { confirmInstall() }
                             .buttonStyle(.borderedProminent)
-                        Button("Cancel") { showDiff = false; pendingHookJSON = "" }
+                        Button(L10n.t("common.cancel")) { showDiff = false; pendingHookJSON = "" }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -386,17 +396,17 @@ struct SettingsView: View {
         }
 
         #if !APPSTORE
-        GroupBox("Gemini CLI Hooks") {
+        GroupBox(L10n.t("hooks.gemini")) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(geminiHooksInstalled
-                     ? "Hooks installed — restart Gemini CLI to activate"
+                     ? L10n.t("hooks.geminiReady")
                      : "~/.gemini/settings.json")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 HStack(spacing: 10) {
-                    Button("Install hooks") { triggerGeminiPreview(install: true) }
+                    Button(L10n.t("hooks.install")) { triggerGeminiPreview(install: true) }
                         .buttonStyle(.borderedProminent)
-                    Button("Uninstall") { triggerGeminiPreview(install: false) }
+                    Button(L10n.t("hooks.uninstall")) { triggerGeminiPreview(install: false) }
                         .buttonStyle(.bordered)
                 }
                 if showGeminiDiff {
@@ -409,9 +419,9 @@ struct SettingsView: View {
                     .background(Color(NSColor.textBackgroundColor))
                     .cornerRadius(6)
                     HStack {
-                        Button("Confirm & write") { confirmGeminiOp() }
+                        Button(L10n.t("hooks.confirm")) { confirmGeminiOp() }
                             .buttonStyle(.borderedProminent)
-                        Button("Cancel") { showGeminiDiff = false; pendingGeminiJSON = "" }
+                        Button(L10n.t("common.cancel")) { showGeminiDiff = false; pendingGeminiJSON = "" }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -419,17 +429,17 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Antigravity Hooks") {
+        GroupBox(L10n.t("hooks.antigravity")) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(agyHooksInstalled
-                     ? "Hooks installed — restart Antigravity to activate"
+                     ? L10n.t("hooks.agyReady")
                      : "~/.gemini/config/hooks.json")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 HStack(spacing: 10) {
-                    Button("Install hooks") { triggerAgyPreview(install: true) }
+                    Button(L10n.t("hooks.install")) { triggerAgyPreview(install: true) }
                         .buttonStyle(.borderedProminent)
-                    Button("Uninstall") { triggerAgyPreview(install: false) }
+                    Button(L10n.t("hooks.uninstall")) { triggerAgyPreview(install: false) }
                         .buttonStyle(.bordered)
                 }
                 if showAgyDiff {
@@ -442,9 +452,9 @@ struct SettingsView: View {
                     .background(Color(NSColor.textBackgroundColor))
                     .cornerRadius(6)
                     HStack {
-                        Button("Confirm & write") { confirmAgyOp() }
+                        Button(L10n.t("hooks.confirm")) { confirmAgyOp() }
                             .buttonStyle(.borderedProminent)
-                        Button("Cancel") { showAgyDiff = false; pendingAgyJSON = "" }
+                        Button(L10n.t("common.cancel")) { showAgyDiff = false; pendingAgyJSON = "" }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -452,17 +462,17 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Codex Hooks") {
+        GroupBox(L10n.t("hooks.codex")) {
             VStack(alignment: .leading, spacing: 10) {
                 Text(codexHooksInstalled
-                     ? "Hooks installed — open Codex and run /hooks or open Hooks in the app's settings to trust them"
+                     ? L10n.t("hooks.codexReady")
                      : "~/.codex/hooks.json")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
                 HStack(spacing: 10) {
-                    Button("Install hooks") { triggerCodexPreview(install: true) }
+                    Button(L10n.t("hooks.install")) { triggerCodexPreview(install: true) }
                         .buttonStyle(.borderedProminent)
-                    Button("Uninstall") { triggerCodexPreview(install: false) }
+                    Button(L10n.t("hooks.uninstall")) { triggerCodexPreview(install: false) }
                         .buttonStyle(.bordered)
                 }
                 if showCodexDiff {
@@ -475,9 +485,9 @@ struct SettingsView: View {
                     .background(Color(NSColor.textBackgroundColor))
                     .cornerRadius(6)
                     HStack {
-                        Button("Confirm & write") { confirmCodexOp() }
+                        Button(L10n.t("hooks.confirm")) { confirmCodexOp() }
                             .buttonStyle(.borderedProminent)
-                        Button("Cancel") { showCodexDiff = false; pendingCodexJSON = "" }
+                        Button(L10n.t("common.cancel")) { showCodexDiff = false; pendingCodexJSON = "" }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -485,13 +495,13 @@ struct SettingsView: View {
             .padding(6)
         }
 
-        GroupBox("Plan usage") {
+        GroupBox(L10n.t("plan.title")) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("Shows your Claude plan usage (5-hour and weekly limits) in the notch header. Coucou adds a status line relay to ~/.claude/settings.json. If you already have a status line, it keeps working as before. Pro and Max plans only.")
+                Text(L10n.t("plan.blurb"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Toggle("Show in the notch", isOn: Binding(
+                Toggle(L10n.t("plan.show"), isOn: Binding(
                     get: { state.showPlanInNotch || planTogglePending },
                     set: { on in
                         if on {
@@ -509,16 +519,16 @@ struct SettingsView: View {
                 ))
                 HStack(spacing: 10) {
                     if state.planRelayInstalled {
-                        Text("Relay: installed")
+                        Text(L10n.t("plan.relayOn"))
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
-                        Button("Uninstall relay") { uninstallStatusLine() }
+                        Button(L10n.t("plan.uninstall")) { uninstallStatusLine() }
                             .buttonStyle(.bordered)
                     } else {
-                        Text("Relay: not installed")
+                        Text(L10n.t("plan.relayOff"))
                             .font(.system(size: 11))
                             .foregroundColor(.secondary)
-                        Button("Install relay") { installStatusLine() }
+                        Button(L10n.t("plan.install")) { installStatusLine() }
                             .buttonStyle(.borderedProminent)
                     }
                 }
@@ -532,9 +542,9 @@ struct SettingsView: View {
                     .background(Color(NSColor.textBackgroundColor))
                     .cornerRadius(6)
                     HStack {
-                        Button("Confirm & write") { confirmStatusLine() }
+                        Button(L10n.t("hooks.confirm")) { confirmStatusLine() }
                             .buttonStyle(.borderedProminent)
-                        Button("Cancel") {
+                        Button(L10n.t("common.cancel")) {
                             showStatusLineDiff = false
                             pendingStatusLineJSON = ""
                             planTogglePending = false
@@ -551,13 +561,13 @@ struct SettingsView: View {
     // MARK: - Chat section
 
     @ViewBuilder private var chatSection: some View {
-        GroupBox("Anthropic API") {
+        GroupBox(L10n.t("chat.anthropic")) {
             VStack(alignment: .leading, spacing: 8) {
-                SecureField("API key (sk-ant-…)", text: $apiKey)
+                SecureField(L10n.t("chat.keyPlaceholder"), text: $apiKey)
                     .textFieldStyle(.roundedBorder)
-                Button("Save") {
+                Button(L10n.t("common.save")) {
                     KeychainStore.shared.set("anthropic-api-key", value: apiKey)
-                    statusMessage = "✓ Key saved."
+                    statusMessage = L10n.t("status.keySaved")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -567,7 +577,7 @@ struct SettingsView: View {
                     ForEach(displayModels, id: \.id) { preset in
                         Text(preset.label).tag(preset.id)
                     }
-                    Text("Custom…").tag(Self.customModelTag)
+                    Text(L10n.t("chat.custom")).tag(Self.customModelTag)
                 }
                 .onChange(of: modelChoice) { _, choice in
                     if choice != Self.customModelTag {
@@ -578,21 +588,21 @@ struct SettingsView: View {
                 }
 
                 if modelChoice == Self.customModelTag {
-                    TextField("Model ID (e.g. claude-sonnet-4-6)", text: $customModel)
+                    TextField(L10n.t("chat.modelId"), text: $customModel)
                         .textFieldStyle(.roundedBorder)
                         .onChange(of: customModel) { _, value in applyCustomModel(value) }
                 }
 
-                Text("Used by the chat. The list comes from your Anthropic account.")
+                Text(L10n.t("chat.usedBy"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
             .padding(6)
         }
 
-        GroupBox("Chat — other providers") {
+        GroupBox(L10n.t("chat.other")) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("To use Google Gemini or OpenAI from the chat. Keys are stored in the Keychain.")
+                Text(L10n.t("chat.otherHint"))
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
 
@@ -600,11 +610,11 @@ struct SettingsView: View {
                     Circle().fill(Color(hex: "#4285F4")).frame(width: 8, height: 8)
                     Text("Google AI").font(.system(size: 12, weight: .semibold))
                 }
-                SecureField("API key (AI Studio)", text: $googleKey)
+                SecureField(L10n.t("chat.googleKey"), text: $googleKey)
                     .textFieldStyle(.roundedBorder)
-                Button("Save") {
+                Button(L10n.t("common.save")) {
                     KeychainStore.shared.set("google-api-key", value: googleKey)
-                    statusMessage = "✓ Google key saved."
+                    statusMessage = L10n.t("status.googleSaved")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -614,20 +624,20 @@ struct SettingsView: View {
                     Circle().fill(Color(hex: "#10A37F")).frame(width: 8, height: 8)
                     Text("OpenAI").font(.system(size: 12, weight: .semibold))
                 }
-                SecureField("API key (sk-…)", text: $openAIKey)
+                SecureField(L10n.t("chat.openaiKey"), text: $openAIKey)
                     .textFieldStyle(.roundedBorder)
-                Button("Save") {
+                Button(L10n.t("common.save")) {
                     KeychainStore.shared.set("openai-api-key", value: openAIKey)
-                    statusMessage = "✓ OpenAI key saved."
+                    statusMessage = L10n.t("status.openaiSaved")
                 }
                 .buttonStyle(.borderedProminent)
             }
             .padding(.vertical, 4)
         }
 
-        GroupBox("Local models") {
+        GroupBox(L10n.t("chat.local")) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Connect to a local model server. No API key needed.")
+                Text(L10n.t("chat.localHint"))
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
 
@@ -636,7 +646,7 @@ struct SettingsView: View {
                     Circle().fill(Color(hex: "#FACC15")).frame(width: 8, height: 8)
                     Text("Ollama").font(.system(size: 12, weight: .semibold))
                     if !state.ollamaServerURL.isEmpty {
-                        Text("Connected")
+                        Text(L10n.t("chat.connected"))
                             .font(.system(size: 10))
                             .foregroundColor(Color(hex: "#22C55E"))
                     }
@@ -644,7 +654,7 @@ struct SettingsView: View {
                 if state.ollamaServerURL.isEmpty {
                     TextField("http://127.0.0.1:11434", text: $ollamaURL)
                         .textFieldStyle(.roundedBorder)
-                    Button(connectingOllama ? "Connecting…" : "Connect") {
+                    Button(connectingOllama ? L10n.t("chat.connecting") : L10n.t("chat.connect")) {
                         Task { await connectLocal(provider: .ollama) }
                     }
                     .buttonStyle(.borderedProminent)
@@ -653,13 +663,13 @@ struct SettingsView: View {
                     Text(state.ollamaServerURL)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
-                    Button("Disconnect") {
+                    Button(L10n.t("chat.disconnect")) {
                         state.ollamaServerURL = ""
                         ollamaURL = ""
                         state.fetchedProviderModels[.ollama] = nil
                         state.providerModelFetchError[.ollama] = nil
                         if state.chatProvider == .ollama { state.chatProvider = .anthropic }
-                        statusMessage = "Ollama disconnected."
+                        statusMessage = L10n.t("status.ollamaOff")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -671,7 +681,7 @@ struct SettingsView: View {
                     Circle().fill(Color(hex: "#A3E635")).frame(width: 8, height: 8)
                     Text("LM Studio").font(.system(size: 12, weight: .semibold))
                     if !state.lmstudioServerURL.isEmpty {
-                        Text("Connected")
+                        Text(L10n.t("chat.connected"))
                             .font(.system(size: 10))
                             .foregroundColor(Color(hex: "#22C55E"))
                     }
@@ -679,7 +689,7 @@ struct SettingsView: View {
                 if state.lmstudioServerURL.isEmpty {
                     TextField("http://127.0.0.1:1234", text: $lmstudioURL)
                         .textFieldStyle(.roundedBorder)
-                    Button(connectingLMStudio ? "Connecting…" : "Connect") {
+                    Button(connectingLMStudio ? L10n.t("chat.connecting") : L10n.t("chat.connect")) {
                         Task { await connectLocal(provider: .lmstudio) }
                     }
                     .buttonStyle(.borderedProminent)
@@ -688,13 +698,13 @@ struct SettingsView: View {
                     Text(state.lmstudioServerURL)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundColor(.secondary)
-                    Button("Disconnect") {
+                    Button(L10n.t("chat.disconnect")) {
                         state.lmstudioServerURL = ""
                         lmstudioURL = ""
                         state.fetchedProviderModels[.lmstudio] = nil
                         state.providerModelFetchError[.lmstudio] = nil
                         if state.chatProvider == .lmstudio { state.chatProvider = .anthropic }
-                        statusMessage = "LM Studio disconnected."
+                        statusMessage = L10n.t("status.lmstudioOff")
                     }
                     .buttonStyle(.bordered)
                 }
@@ -715,9 +725,9 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#22C55E")).frame(width: 8, height: 8)
                         Text("Resend").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("API key  (re_…)", text: $resendKey)
+                    SecureField(L10n.t("int.resendKey"), text: $resendKey)
                         .textFieldStyle(.roundedBorder)
-                    TextField("From address  (you@yourdomain.com)", text: $resendFrom)
+                    TextField(L10n.t("int.resendFrom"), text: $resendFrom)
                         .textFieldStyle(.roundedBorder)
                 }
 
@@ -727,12 +737,12 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#F29B38")).frame(width: 8, height: 8)
                         Text("n8n").font(.system(size: 12, weight: .semibold))
                     }
-                    TextField("Instance URL  (https://…)", text: $n8nUrl)
+                    TextField(L10n.t("int.n8nUrl"), text: $n8nUrl)
                         .textFieldStyle(.roundedBorder)
-                    SecureField("API key", text: $n8nKey)
+                    SecureField(L10n.t("chat.key"), text: $n8nKey)
                         .textFieldStyle(.roundedBorder)
                     IntegrationFilterRow(
-                        label: "Workflows",
+                        label: L10n.t("filter.workflows"),
                         items: n8nWorkflows,
                         filter: $state.n8nWorkflowFilter,
                         loading: loadingN8n,
@@ -746,10 +756,10 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#7C5CFF")).frame(width: 8, height: 8)
                         Text("Vercel").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("Token", text: $vercelToken)
+                    SecureField(L10n.t("int.token"), text: $vercelToken)
                         .textFieldStyle(.roundedBorder)
                     IntegrationFilterRow(
-                        label: "Projects",
+                        label: L10n.t("filter.projects"),
                         items: vercelProjects,
                         filter: $state.vercelProjectFilter,
                         loading: loadingVercel,
@@ -763,9 +773,9 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#F4505E")).frame(width: 8, height: 8)
                         Text("GitHub").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("Personal Access Token", text: $githubToken)
+                    SecureField(L10n.t("int.personalToken"), text: $githubToken)
                         .textFieldStyle(.roundedBorder)
-                    Text("Classic token with repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions.")
+                    Text(L10n.t("int.githubHint"))
                         .font(.system(size: 10))
                         .foregroundColor(Color(hex: "#8E939C"))
                 }
@@ -776,7 +786,7 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#0570DE")).frame(width: 8, height: 8)
                         Text("Stripe").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("Secret key  (sk_live_… or sk_test_…)", text: $stripeKey)
+                    SecureField(L10n.t("int.stripeKey"), text: $stripeKey)
                         .textFieldStyle(.roundedBorder)
                 }
 
@@ -786,7 +796,7 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#C9956A")).frame(width: 8, height: 8)
                         Text("Cal.com").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("API key  (cal_live_…)", text: $calcomKey)
+                    SecureField(L10n.t("int.calcomKey"), text: $calcomKey)
                         .textFieldStyle(.roundedBorder)
                 }
 
@@ -796,11 +806,11 @@ struct SettingsView: View {
                         Circle().fill(Color(hex: "#E8E8E8")).frame(width: 8, height: 8)
                         Text("Notion").font(.system(size: 12, weight: .semibold))
                     }
-                    SecureField("Integration token  (secret_…)", text: $notionKey)
+                    SecureField(L10n.t("int.notionKey"), text: $notionKey)
                         .textFieldStyle(.roundedBorder)
                 }
 
-                Button("Save integrations") { saveIntegrations() }
+                Button(L10n.t("int.save")) { saveIntegrations() }
                     .buttonStyle(.borderedProminent)
             }
             .padding(6)
@@ -819,7 +829,7 @@ struct SettingsView: View {
             if on { try SMAppService.mainApp.register() }
             else  { try SMAppService.mainApp.unregister() }
         } catch {
-            statusMessage = "❌ Startup: \(error.localizedDescription)"
+            statusMessage = L10n.t("status.startup", ["message": error.localizedDescription])
             launchAtStartup = !on
         }
     }
@@ -840,37 +850,37 @@ struct SettingsView: View {
         panel.directoryURL = URL(fileURLWithPath: realHomePath)
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         guard url.lastPathComponent == ".claude" else {
-            statusMessage = "❌ Select the .claude folder (hidden, in your Home directory)."
+            statusMessage = L10n.t("status.selectFolder")
             return nil
         }
         return url
     }
 
     private func installHooksAppStore() {
-        guard let claudeURL = pickClaudeFolder(prompt: "Select") else { return }
+        guard let claudeURL = pickClaudeFolder(prompt: L10n.t("alert.select")) else { return }
         let alert = NSAlert()
-        alert.messageText = "Install Coucou hooks in ~/.claude?"
-        alert.informativeText = "Will write:\n• ~/.claude/coucou/nb-hook\n• ~/.claude/settings.json (backup created first)"
-        alert.addButton(withTitle: "Install")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = L10n.t("alert.installTitle")
+        alert.informativeText = L10n.t("alert.installBody")
+        alert.addButton(withTitle: L10n.t("alert.install"))
+        alert.addButton(withTitle: L10n.t("alert.cancel"))
         alert.alertStyle = .informational
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
             try HookServer.shared.installAndWriteClaudeHooksAppStore(claudeURL: claudeURL)
             hookNeedsUpdate = false
-            statusMessage = "✓ Hooks installed — restart VS Code to activate."
+            statusMessage = L10n.t("status.hooksVSCode")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
     private func uninstallHooksAppStore() {
-        guard let claudeURL = pickClaudeFolder(prompt: "Select") else { return }
+        guard let claudeURL = pickClaudeFolder(prompt: L10n.t("alert.select")) else { return }
         do {
             try HookServer.shared.uninstallClaudeHooksAppStore(claudeURL: claudeURL)
-            statusMessage = "✓ Hooks removed."
+            statusMessage = L10n.t("status.hooksRemoved")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
     #endif
@@ -882,7 +892,7 @@ struct SettingsView: View {
             : rawURL
         let normalised = LocalChat.normaliseURL(candidate)
         guard normalised.hasPrefix("http://") || normalised.hasPrefix("https://") else {
-            statusMessage = "Only http:// and https:// URLs are supported."
+            statusMessage = L10n.t("status.httpOnly")
             return
         }
         if provider == .ollama { connectingOllama = true } else { connectingLMStudio = true }
@@ -892,7 +902,7 @@ struct SettingsView: View {
         let name = provider == .ollama ? "Ollama" : "LM Studio"
         switch result {
         case .success(let models) where models.isEmpty:
-            statusMessage = "No models yet — download one in \(name) first."
+            statusMessage = L10n.t("status.noModels", ["name": name])
         case .success(let models):
             if provider == .ollama {
                 state.ollamaServerURL = normalised
@@ -905,9 +915,9 @@ struct SettingsView: View {
                 state.fetchedProviderModels[.lmstudio] = nil
                 state.providerModelFetchError[.lmstudio] = nil
             }
-            statusMessage = "✓ Connected · \(models.count) model\(models.count == 1 ? "" : "s")"
+            statusMessage = L10n.t(models.count == 1 ? "status.connectedOne" : "status.connectedMany", ["count": "\(models.count)"])
         case .failure:
-            statusMessage = "Couldn't reach \(name) at \(normalised). Is it running?"
+            statusMessage = L10n.t("status.unreachable", ["name": name, "url": normalised])
         }
     }
 
@@ -915,9 +925,9 @@ struct SettingsView: View {
         do {
             pendingHookJSON = try HookServer.shared.previewClaudeHooks()
             showDiff = true
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -925,20 +935,20 @@ struct SettingsView: View {
         do {
             try HookServer.shared.writeClaudeHooks()
             showDiff = false
-            statusMessage = "✓ Hooks installed in ~/.claude/settings.json"
+            statusMessage = L10n.t("status.hooksWritten")
             pendingHookJSON = ""
             hookNeedsUpdate = false
         } catch {
-            statusMessage = "❌ Write error: \(error.localizedDescription)"
+            statusMessage = L10n.t("status.writeError", ["message": error.localizedDescription])
         }
     }
 
     private func uninstallHooks() {
         do {
             try HookServer.shared.uninstallClaudeHooks()
-            statusMessage = "✓ Hooks removed."
+            statusMessage = L10n.t("status.hooksRemoved")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -948,11 +958,11 @@ struct SettingsView: View {
             geminiPendingInstall = install
             pendingGeminiJSON = try HookServer.shared.previewGeminiHooks(install: install)
             showGeminiDiff = true
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch let e as NSError where e.domain == "CoucouNoop" {
             statusMessage = e.localizedDescription
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -963,10 +973,10 @@ struct SettingsView: View {
             pendingGeminiJSON = ""
             geminiHooksInstalled = geminiPendingInstall
             statusMessage = geminiPendingInstall
-                ? "✓ Gemini CLI hooks installed in ~/.gemini/settings.json"
-                : "✓ Gemini CLI hooks removed."
+                ? L10n.t("status.geminiOn")
+                : L10n.t("status.geminiOff")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -975,11 +985,11 @@ struct SettingsView: View {
             agyPendingInstall = install
             pendingAgyJSON = try HookServer.shared.previewAgyHooks(install: install)
             showAgyDiff = true
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch let e as NSError where e.domain == "CoucouNoop" {
             statusMessage = e.localizedDescription
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -990,10 +1000,10 @@ struct SettingsView: View {
             pendingAgyJSON = ""
             agyHooksInstalled = agyPendingInstall
             statusMessage = agyPendingInstall
-                ? "✓ Antigravity hooks installed in ~/.gemini/config/hooks.json"
-                : "✓ Antigravity hooks removed."
+                ? L10n.t("status.agyOn")
+                : L10n.t("status.agyOff")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -1002,11 +1012,11 @@ struct SettingsView: View {
             codexPendingInstall = install
             pendingCodexJSON = try HookServer.shared.previewCodexHooks(install: install)
             showCodexDiff = true
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch let e as NSError where e.domain == "CoucouNoop" {
             statusMessage = e.localizedDescription
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -1017,10 +1027,10 @@ struct SettingsView: View {
             pendingCodexJSON = ""
             codexHooksInstalled = codexPendingInstall
             statusMessage = codexPendingInstall
-                ? "✓ Codex hooks installed — run /hooks in Codex or open Hooks in the app's settings to trust them."
-                : "✓ Codex hooks removed."
+                ? L10n.t("status.codexOn")
+                : L10n.t("status.codexOff")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -1029,9 +1039,9 @@ struct SettingsView: View {
             pendingStatusLineJSON = try HookServer.shared.previewStatusLine(install: true)
             showStatusLineDiff = true
             statusLinePendingInstall = true
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -1040,9 +1050,9 @@ struct SettingsView: View {
             pendingStatusLineJSON = try HookServer.shared.previewStatusLine(install: false)
             showStatusLineDiff = true
             statusLinePendingInstall = false
-            statusMessage = "Review the JSON below before confirming."
+            statusMessage = L10n.t("status.review")
         } catch {
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
 
@@ -1060,11 +1070,11 @@ struct SettingsView: View {
                 state.showPlanInNotch = false
             }
             statusMessage = statusLinePendingInstall
-                ? "✓ Status line installed."
-                : "✓ Status line removed."
+                ? L10n.t("status.lineOn")
+                : L10n.t("status.lineOff")
         } catch {
             planTogglePending = false
-            statusMessage = "❌ \(error.localizedDescription)"
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
         }
     }
     #endif
@@ -1093,7 +1103,7 @@ struct SettingsView: View {
         saveKey("stripe-api-key",  value: stripeKey)
         saveKey("calcom-api-key",  value: calcomKey)
         saveKey("notion-api-key",  value: notionKey)
-        statusMessage = "✓ Integration keys saved."
+        statusMessage = L10n.t("status.integrationsSaved")
     }
 
     private func saveKey(_ key: String, value: String) {
@@ -1108,7 +1118,7 @@ struct SettingsView: View {
 
     private func loadVercelProjects() {
         guard let token = KeychainStore.shared.get("vercel-token") else {
-            statusMessage = "❌ Save Vercel token first."
+            statusMessage = L10n.t("status.vercelFirst")
             return
         }
         loadingVercel = true
@@ -1127,7 +1137,7 @@ struct SettingsView: View {
             DispatchQueue.main.async {
                 self.vercelProjects = names
                 self.loadingVercel = false
-                if names.isEmpty { self.statusMessage = "❌ No Vercel projects found." }
+                if names.isEmpty { self.statusMessage = L10n.t("status.vercelNone") }
             }
         }.resume()
     }
@@ -1137,7 +1147,7 @@ struct SettingsView: View {
     private func loadN8nWorkflows() {
         guard let apiKey  = KeychainStore.shared.get("n8n-api-key"),
               let rawBase = KeychainStore.shared.get("n8n-url") else {
-            statusMessage = "❌ Save n8n URL and API key first."
+            statusMessage = L10n.t("status.n8nFirst")
             return
         }
         loadingN8n = true
@@ -1148,7 +1158,7 @@ struct SettingsView: View {
 
     private func fetchN8nWorkflows(urls: [String], apiKey: String, idx: Int) {
         guard idx < urls.count, let url = URL(string: urls[idx]) else {
-            DispatchQueue.main.async { self.loadingN8n = false; self.statusMessage = "❌ No n8n workflows found." }
+            DispatchQueue.main.async { self.loadingN8n = false; self.statusMessage = L10n.t("status.n8nNone") }
             return
         }
         var req = URLRequest(url: url, timeoutInterval: 10)
@@ -1168,7 +1178,7 @@ struct SettingsView: View {
             DispatchQueue.main.async {
                 self.n8nWorkflows = names
                 self.loadingN8n = false
-                if names.isEmpty { self.statusMessage = "❌ No n8n workflows found." }
+                if names.isEmpty { self.statusMessage = L10n.t("status.n8nNone") }
             }
         }.resume()
     }
@@ -1180,20 +1190,20 @@ struct SettingsView: View {
         let atMax  = state.activeIntegrations.count >= 4 && !isOn && !isMain
         let hint: String? = {
             if isMain { return nil }
-            if def.comingSoon { return "Coming soon" }
+            if def.comingSoon { return L10n.t("int.comingSoon") }
             #if !APPSTORE
-            if def.id == "agent_gemini"        && !HookServer.geminiHooksInstalled()  { return "Hooks not installed" }
-            if def.id == "agent_antigravity"   && !HookServer.agyHooksInstalled()    { return "Hooks not installed" }
-            if def.id == "agent_codex"         && !HookServer.codexHooksInstalled()  { return "Hooks not installed" }
+            if def.id == "agent_gemini"        && !HookServer.geminiHooksInstalled()  { return L10n.t("int.hooksMissing") }
+            if def.id == "agent_antigravity"   && !HookServer.agyHooksInstalled()    { return L10n.t("int.hooksMissing") }
+            if def.id == "agent_codex"         && !HookServer.codexHooksInstalled()  { return L10n.t("int.hooksMissing") }
             #endif
             if def.category == .ai {
                 if let provider = ChatProvider(pillID: def.id), provider.isLocal {
                     let url = provider == .ollama ? state.ollamaServerURL : state.lmstudioServerURL
-                    if url.isEmpty { return "Not connected" }
+                    if url.isEmpty { return L10n.t("int.notConnected") }
                 } else {
                     let keyId = def.id == "ai_anthropic" ? "anthropic-api-key"
                                : def.id == "ai_google"    ? "google-api-key" : "openai-api-key"
-                    if KeychainStore.shared.get(keyId) == nil { return "Key not configured" }
+                    if KeychainStore.shared.get(keyId) == nil { return L10n.t("int.keyMissing") }
                 }
             }
             return nil
@@ -1207,7 +1217,7 @@ struct SettingsView: View {
                 .foregroundColor(atMax ? .secondary : .primary)
             Spacer()
             if isMain {
-                Text("Main")
+                Text(L10n.t("pills.main"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             } else {
@@ -1279,12 +1289,12 @@ struct IntegrationFilterRow: View {
                 if loading {
                     ProgressView().scaleEffect(0.6)
                 } else {
-                    Button(items.isEmpty ? "Load list" : "Refresh") { onLoad() }
+                    Button(items.isEmpty ? L10n.t("github.load") : L10n.t("int.refresh")) { onLoad() }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
                 }
                 if !filter.isEmpty {
-                    Button("Clear") { filter = [] }
+                    Button(L10n.t("github.clear")) { filter = [] }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
                         .foregroundColor(.secondary)
@@ -1310,7 +1320,7 @@ struct IntegrationFilterRow: View {
                 }
                 .padding(.leading, 4)
                 if !filter.isEmpty {
-                    Text("Watching \(filter.count) of \(items.count)")
+                    Text(L10n.t("github.watching", ["count": "\(filter.count)", "total": "\(items.count)"]))
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
@@ -1343,7 +1353,7 @@ struct ShortcutRecorderButton: View {
                 return nil
             }
         } label: {
-            Text(isRecording ? "Press keys…" : shortcutLabel)
+            Text(isRecording ? L10n.t("shortcut.press") : shortcutLabel)
                 .font(.system(size: 11, design: .monospaced))
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(isRecording ? Color.accentColor.opacity(0.12) : Color(NSColor.controlBackgroundColor))
@@ -1361,7 +1371,7 @@ struct ShortcutRecorderButton: View {
         if f.contains(.shift)   { s += "⇧" }
         if f.contains(.command) { s += "⌘" }
         s += keyChar(code)
-        return s.isEmpty ? "None" : s
+        return s.isEmpty ? L10n.t("shortcut.none") : s
     }
 
     private func keyChar(_ c: UInt16) -> String {
