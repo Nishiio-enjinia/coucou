@@ -224,6 +224,7 @@
   "int.resendFrom": "Adresse d'expédition  (toi@tondomaine.com)",
   "int.n8nUrl": "URL de l'instance  (https://…)",
   "int.githubHint": "Token classique avec le scope repo, ou fine-grained avec lecture des pull requests, des statuts de commit et d'Actions.",
+  "int.gitlabHint": "Jeton personnel avec le scope read_api. L'URL, c'est ton GitLab, par exemple https://gitlab.com.",
   "int.stripeKey": "Clé secrète  (sk_live_… ou sk_test_…)",
   "int.calcomKey": "Clé API  (cal_live_…)",
   "int.notionKey": "Jeton d'intégration  (secret_…)",
@@ -297,6 +298,9 @@
   "github.load": "Charger la liste",
   "github.clear": "Effacer",
   "github.watching": "{count} sur {total} suivis",
+  "gitlab.kind": "Activité",
+  "gitlab.empty": "Rien pour l'instant",
+  "gitlab.event": "Événement",
 
   "status.keySaved": "✓ Clé enregistrée.",
   "status.googleSaved": "✓ Clé Google enregistrée.",

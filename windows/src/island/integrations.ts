@@ -11,6 +11,7 @@ import type { Island } from "./island";
 const KEY_FOR: Record<string, string> = {
   integration_stripe: "stripe-api-key",
   integration_github: "github-token",
+  integration_gitlab: "gitlab-token",
   integration_vercel: "vercel-token",
   integration_n8n: "n8n-api-key",
   integration_resend: "resend-api-key",
@@ -31,6 +32,11 @@ export async function refreshConfigured() {
     const present = (await Bridge.secretPresent(key)) ?? false;
     const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
     State.integrations[id] = { ...info, configured: present };
+  }
+  const gitlab = State.integrations.integration_gitlab;
+  if (gitlab) {
+    const url = (await Bridge.secretPresent("gitlab-url")) ?? false;
+    gitlab.configured = gitlab.configured && url;
   }
   const hooks = State.settings.hooksInstalled;
   const claude = State.integrations.integration_claude ?? {

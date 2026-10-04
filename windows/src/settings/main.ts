@@ -48,7 +48,7 @@ async function main() {
   hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
   const keys = [
-    "stripe-api-key", "github-token", "vercel-token",
+    "stripe-api-key", "github-token", "gitlab-url", "gitlab-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
   ];
   for (const k of keys) secretsPresent[k] = (await Bridge.secretPresent(k)) ?? false;
@@ -480,6 +480,11 @@ function integrationDefs(): IntegrationDef[] {
     fields: [{ key: "stripe-api-key", label: t("int.secret"), placeholder: "sk_live_…", secret: true }] },
   { id: "integration_github", name: "GitHub", color: "#F4505E",
     fields: [{ key: "github-token", label: t("int.token"), placeholder: "ghp_…", secret: true }] },
+  { id: "integration_gitlab", name: "GitLab", color: "#E24329",
+    fields: [
+      { key: "gitlab-url", label: t("int.instanceUrl"), placeholder: "https://gitlab.com", secret: false },
+      { key: "gitlab-token", label: t("int.token"), placeholder: "glpat-…", secret: true },
+    ] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
     fields: [{ key: "vercel-token", label: t("int.token"), placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
@@ -552,6 +557,9 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
           input, saveBtn, dotEl,
         ),
       );
+    }
+    if (def.id === "integration_gitlab") {
+      rows.append(h("div", { class: "hint", text: t("int.gitlabHint") }));
     }
 
     list.append(

@@ -150,6 +150,10 @@ export class Island {
         };
         if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
         else if (task.id === "agent_cursor") void Bridge.openCursor(task.sessionCwd ?? null);
+        else if (task.id === "integration_gitlab") {
+          const url = State.integrations.integration_gitlab?.data?.webUrl;
+          if (typeof url === "string") void Bridge.openUrl(url);
+        }
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },

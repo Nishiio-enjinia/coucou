@@ -67,6 +67,7 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_stripe", 6, 30, poll_stripe);
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
+    spawn(app.clone(), "integration_gitlab", 8, 60, poll_gitlab);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app, "integration_notion", 9, 300, poll_notion);
 }
@@ -108,6 +109,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
     match id {
         "integration_stripe" => poll_stripe(app).await,
         "integration_github" => poll_github(app).await,
+        "integration_gitlab" => poll_gitlab(app).await,
         "integration_vercel" => poll_vercel(app).await,
         "integration_n8n" => poll_n8n(app).await,
         "integration_resend" => poll_resend(app).await,
@@ -320,6 +322,483 @@ async fn poll_github(app: AppHandle) {
         data: json!({ "totalRepos": public + private, "totalStars": stars }),
         error: None,
         event: None,
+    });
+}
+
+// ── GitLab ────────────────────────────────────────────────────────────────────
+//
+// One instance, whichever URL the user stored. Events cover pushes, commits,
+// issues and comments across the projects they can see. Merge requests come
+// from their own endpoint: the events API does not return them.
+
+static GITLAB_PROJECTS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+struct GitlabItem {
+    /// Identity used to notice a new event. Merge requests include their update time.
+    seen: String,
+    feed: &'static str,
+    kind: &'static str,
+    title: String,
+    project_id: Option<i64>,
+    project: String,
+    author: String,
+    reference: String,
+    iid: Option<i64>,
+    created_at: String,
+    failure: bool,
+    tail: Option<String>,
+}
+
+fn gitlab_error(app: &AppHandle, error: String) {
+    emit(app, IntegrationUpdate {
+        id: "integration_gitlab",
+        data: json!({}),
+        error: Some(error),
+        event: None,
+    });
+}
+
+fn gitlab_http() -> reqwest::Client {
+    // No redirects: the token must stay on the instance the user typed.
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
+/// `https://gitlab.example.com`, or the same host with a subpath. `/api/v4` is stripped.
+fn gitlab_base(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Instance URL missing".into());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|_| "Instance URL is not a URL".to_string())?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err("Instance URL must start with http:// or https://".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Put the token in the token field, not in the URL".into());
+    }
+    if url.host_str().is_none() {
+        return Err("Instance URL has no host".into());
+    }
+    let mut path = url.path().trim_end_matches('/').to_string();
+    if let Some(stripped) = path.strip_suffix("/api/v4") {
+        path = stripped.trim_end_matches('/').to_string();
+    }
+    let mut base = url.origin().ascii_serialization();
+    if !path.is_empty() && path != "/" {
+        base.push_str(&path);
+    }
+    Ok(base)
+}
+
+fn json_i64(v: Option<&Value>) -> Option<i64> {
+    v.and_then(|v| v.as_i64().or_else(|| v.as_u64().and_then(|n| i64::try_from(n).ok())))
+}
+
+fn json_str<'a>(v: &'a Value, key: &str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn clip_line(raw: &str) -> String {
+    let flat: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out = String::new();
+    for (i, ch) in flat.chars().enumerate() {
+        if i == 90 {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn safe_project_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.ends_with('/')
+        && !path.contains("..")
+        && !path.contains("//")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+fn safe_ref(reference: &str) -> bool {
+    !reference.is_empty()
+        && !reference.contains("..")
+        && !reference.starts_with('/')
+        && !reference.starts_with('-')
+        && reference
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+fn safe_sha(sha: &str) -> bool {
+    (7..=64).contains(&sha.len()) && sha.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn tail_is_safe(tail: &str) -> bool {
+    tail.starts_with("/-/")
+        && !tail.contains("..")
+        && tail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+fn issue_tail(iid: i64) -> Option<String> {
+    (iid > 0).then(|| format!("/-/issues/{iid}"))
+}
+
+fn merge_tail(iid: i64) -> Option<String> {
+    (iid > 0).then(|| format!("/-/merge_requests/{iid}"))
+}
+
+fn push_tail(push: &Value) -> Option<String> {
+    let sha = push.get("commit_to").and_then(Value::as_str).unwrap_or("");
+    let reference = push.get("ref").and_then(Value::as_str).unwrap_or("");
+    let count = push.get("commit_count").and_then(Value::as_i64).unwrap_or(0);
+    if count <= 1 && safe_sha(sha) {
+        return Some(format!("/-/commit/{sha}"));
+    }
+    if safe_ref(reference) {
+        let folder = if push.get("ref_type").and_then(Value::as_str) == Some("tag") {
+            "tags"
+        } else {
+            "commits"
+        };
+        return Some(format!("/-/{folder}/{reference}"));
+    }
+    None
+}
+
+fn gitlab_url(base: &str, project: &str, tail: &Option<String>) -> Option<String> {
+    if !safe_project_path(project) {
+        return None;
+    }
+    match tail {
+        Some(tail) if tail_is_safe(tail) => Some(format!("{base}/{project}{tail}")),
+        _ => Some(format!("{base}/{project}")),
+    }
+}
+
+fn author_name(v: &Value) -> String {
+    let direct = json_str(v, "author_username");
+    if !direct.is_empty() {
+        return direct.to_string();
+    }
+    v.get("author")
+        .and_then(|a| a.get("username"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn map_gitlab_event(v: &Value) -> Option<GitlabItem> {
+    let id = json_i64(v.get("id"))?;
+    let action = json_str(v, "action_name");
+    if matches!(action, "joined" | "left" | "expired") {
+        return None;
+    }
+    let target_type = json_str(v, "target_type");
+    let project_id = json_i64(v.get("project_id"));
+    let created_at = json_str(v, "created_at").to_string();
+    let author = author_name(v);
+    let iid = json_i64(v.get("target_iid")).filter(|n| *n > 0);
+    let failure = action.to_ascii_lowercase().contains("fail");
+
+    if target_type.eq_ignore_ascii_case("Note") {
+        let note = v.get("note")?;
+        if note.get("system").and_then(Value::as_bool).unwrap_or(false) {
+            return None;
+        }
+        let body = clip_line(note.get("body").and_then(Value::as_str).unwrap_or(""));
+        let title = if body.is_empty() {
+            clip_line(json_str(v, "target_title"))
+        } else {
+            body
+        };
+        let noteable = note.get("noteable_type").and_then(Value::as_str).unwrap_or("");
+        let note_iid = json_i64(note.get("noteable_iid")).filter(|n| *n > 0);
+        let tail = match noteable {
+            "Issue" => note_iid.and_then(issue_tail),
+            "MergeRequest" => note_iid.and_then(merge_tail),
+            _ => None,
+        };
+        return Some(GitlabItem {
+            seen: id.to_string(),
+            feed: "event",
+            kind: "note",
+            title,
+            project_id,
+            project: String::new(),
+            author,
+            reference: String::new(),
+            iid: note_iid.or(iid),
+            created_at,
+            failure: false,
+            tail,
+        });
+    }
+
+    let pushed = action.to_ascii_lowercase().contains("push");
+    if pushed || v.get("push_data").is_some_and(Value::is_object) {
+        let push = v.get("push_data").filter(|p| p.is_object());
+        let reference = push
+            .and_then(|p| p.get("ref"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let title = clip_line(
+            push.and_then(|p| p.get("commit_title"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        return Some(GitlabItem {
+            seen: id.to_string(),
+            feed: "event",
+            kind: "push",
+            title,
+            project_id,
+            project: String::new(),
+            author,
+            reference,
+            iid: None,
+            created_at,
+            failure,
+            tail: push.and_then(push_tail),
+        });
+    }
+
+    let kind = if target_type.eq_ignore_ascii_case("Issue") {
+        "issue"
+    } else if target_type.eq_ignore_ascii_case("MergeRequest") {
+        "merge"
+    } else {
+        "other"
+    };
+    let tail = match kind {
+        "issue" => iid.and_then(issue_tail),
+        "merge" => iid.and_then(merge_tail),
+        _ => None,
+    };
+    Some(GitlabItem {
+        seen: id.to_string(),
+        feed: "event",
+        kind,
+        title: clip_line(json_str(v, "target_title")),
+        project_id,
+        project: String::new(),
+        author,
+        reference: String::new(),
+        iid,
+        created_at,
+        failure,
+        tail,
+    })
+}
+
+fn map_gitlab_merge(v: &Value) -> Option<GitlabItem> {
+    let id = json_i64(v.get("id"))?;
+    let iid = json_i64(v.get("iid")).filter(|n| *n > 0)?;
+    let updated = json_str(v, "updated_at");
+    if updated.is_empty() {
+        return None;
+    }
+    Some(GitlabItem {
+        seen: format!("{id}:{updated}"),
+        feed: "mr",
+        kind: "merge",
+        title: clip_line(json_str(v, "title")),
+        project_id: json_i64(v.get("project_id")),
+        project: String::new(),
+        author: v
+            .get("author")
+            .and_then(|a| a.get("username"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        reference: json_str(v, "source_branch").to_string(),
+        iid: Some(iid),
+        created_at: updated.to_string(),
+        failure: false,
+        tail: merge_tail(iid),
+    })
+}
+
+fn gitlab_json(base: &str, item: &GitlabItem) -> Value {
+    json!({
+        "id": item.seen,
+        "kind": item.kind,
+        "title": item.title,
+        "project": item.project,
+        "author": item.author,
+        "ref": item.reference,
+        "iid": item.iid,
+        "createdAt": item.created_at,
+        "url": gitlab_url(base, &item.project, &item.tail),
+        "failure": item.failure,
+    })
+}
+
+fn gitlab_alert(item: &GitlabItem) -> (String, Option<String>) {
+    let short = item
+        .project
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("GitLab");
+    let label = if item.author.is_empty() {
+        short.to_string()
+    } else {
+        format!("{} · {short}", item.author)
+    };
+    let detail = if item.title.is_empty() { None } else { Some(item.title.clone()) };
+    (label, detail)
+}
+
+async fn gitlab_project(http: &reqwest::Client, base: &str, token: &str, id: i64) -> Option<String> {
+    let key = format!("{base}|{id}");
+    if let Some(hit) = GITLAB_PROJECTS.lock().ok().and_then(|map| map.get(&key).cloned()) {
+        return Some(hit);
+    }
+    let response = http
+        .get(format!("{base}/api/v4/projects/{id}"))
+        .header("PRIVATE-TOKEN", token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let json: Value = response.json().await.ok()?;
+    let path = json.get("path_with_namespace")?.as_str()?.to_string();
+    if !safe_project_path(&path) {
+        return None;
+    }
+    if let Ok(mut map) = GITLAB_PROJECTS.lock() {
+        if map.len() > 200 {
+            map.clear();
+        }
+        map.insert(key, path.clone());
+    }
+    Some(path)
+}
+
+async fn poll_gitlab(app: AppHandle) {
+    let Some(token) = secrets::get("gitlab-token") else { return };
+    let Some(raw_base) = secrets::get("gitlab-url") else {
+        gitlab_error(&app, "Instance URL missing".into());
+        return;
+    };
+    let base = match gitlab_base(&raw_base) {
+        Ok(base) => base,
+        Err(err) => {
+            gitlab_error(&app, err);
+            return;
+        }
+    };
+    let http = gitlab_http();
+    let response = match http
+        .get(format!("{base}/api/v4/events?scope=all&sort=desc&per_page=20"))
+        .header("PRIVATE-TOKEN", &token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            gitlab_error(&app, format!("No connection: {err}"));
+            return;
+        }
+    };
+    let status = response.status();
+    if status.is_redirection() {
+        gitlab_error(&app, "GitLab redirected the request".into());
+        return;
+    }
+    if !status.is_success() {
+        log::line(format!("gitlab events HTTP {}", status.as_u16()));
+        gitlab_error(&app, status_error(status.as_u16(), "Token needs the read_api scope"));
+        return;
+    }
+    let json: Value = response.json().await.unwrap_or(json!([]));
+    let Value::Array(raw_events) = json else {
+        gitlab_error(&app, "Unexpected GitLab response".into());
+        return;
+    };
+    let mut items: Vec<GitlabItem> = raw_events.iter().filter_map(map_gitlab_event).collect();
+
+    if let Ok(response) = http
+        .get(format!(
+            "{base}/api/v4/merge_requests?scope=all&state=all&order_by=updated_at&sort=desc&per_page=10"
+        ))
+        .header("PRIVATE-TOKEN", &token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+    {
+        if response.status().is_success() {
+            if let Ok(Value::Array(list)) = response.json::<Value>().await {
+                items.extend(list.iter().filter_map(map_gitlab_merge));
+            }
+        } else {
+            log::line(format!("gitlab merge requests HTTP {}", response.status()));
+        }
+    }
+
+    let mut project_ids: Vec<i64> = items.iter().filter_map(|item| item.project_id).collect();
+    project_ids.sort_unstable();
+    project_ids.dedup();
+    project_ids.truncate(8);
+    let mut names = std::collections::HashMap::new();
+    for id in project_ids {
+        if let Some(path) = gitlab_project(&http, &base, &token, id).await {
+            names.insert(id, path);
+        }
+    }
+    for item in &mut items {
+        if let Some(id) = item.project_id {
+            if let Some(path) = names.get(&id) {
+                item.project = path.clone();
+            }
+        }
+    }
+
+    let event_seen = items
+        .iter()
+        .filter(|item| item.feed == "event")
+        .max_by_key(|item| item.seen.parse::<i64>().unwrap_or(0))
+        .map(|item| item.seen.clone());
+    let mr_seen = items
+        .iter()
+        .filter(|item| item.feed == "mr")
+        .max_by(|a, b| a.created_at.cmp(&b.created_at))
+        .map(|item| item.seen.clone());
+    let event_new = event_seen.as_deref().is_some_and(|id| is_new("gitlab-event", id));
+    let mr_new = mr_seen.as_deref().is_some_and(|id| is_new("gitlab-mr", id));
+
+    items.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    let alert = items.iter().find(|item| {
+        (event_new && item.feed == "event" && event_seen.as_deref() == Some(item.seen.as_str()))
+            || (mr_new && item.feed == "mr" && mr_seen.as_deref() == Some(item.seen.as_str()))
+    });
+    let event = alert.map(|item| {
+        let (label, detail) = gitlab_alert(item);
+        IntegrationEvent { success: !item.failure, label, detail }
+    });
+    let shown: Vec<Value> = items.iter().take(8).map(|item| gitlab_json(&base, item)).collect();
+    log::line(format!("gitlab {} event(s)", shown.len()));
+
+    emit(&app, IntegrationUpdate {
+        id: "integration_gitlab",
+        data: json!({ "webUrl": base, "events": shown }),
+        error: None,
+        event,
     });
 }
 
@@ -761,5 +1240,81 @@ fn fmt_value(v: &Value) -> String {
         Value::Array(a) => format!("[{}]", a.len()),
         Value::Object(_) => "{…}".into(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod gitlab_tests {
+    use super::*;
+
+    #[test]
+    fn instance_url_keeps_the_host_and_drops_the_api_suffix() {
+        assert_eq!(gitlab_base("https://gitlab.com").as_deref(), Ok("https://gitlab.com"));
+        assert_eq!(gitlab_base("https://gitlab.com/api/v4/").as_deref(), Ok("https://gitlab.com"));
+        assert_eq!(
+            gitlab_base("https://git.example.com/gitlab").as_deref(),
+            Ok("https://git.example.com/gitlab")
+        );
+        assert_eq!(
+            gitlab_base("http://127.0.0.1:8929").as_deref(),
+            Ok("http://127.0.0.1:8929")
+        );
+        assert!(gitlab_base("https://user:token@gitlab.com").is_err());
+        assert!(gitlab_base("file:///tmp/gitlab").is_err());
+    }
+
+    #[test]
+    fn push_links_to_the_commit_and_issue_links_to_the_ticket() {
+        let push = json!({
+            "id": 4,
+            "project_id": 15,
+            "action_name": "pushed",
+            "author_username": "root",
+            "created_at": "2015-12-04T10:33:58.089Z",
+            "push_data": {
+                "commit_count": 1,
+                "action": "pushed",
+                "ref_type": "branch",
+                "commit_to": "c5feabde2d8cd023215af4d2ceeb7a64839fc428",
+                "ref": "main",
+                "commit_title": "Add simple search"
+            }
+        });
+        let item = map_gitlab_event(&push).unwrap();
+        assert_eq!(item.kind, "push");
+        assert_eq!(item.title, "Add simple search");
+        assert_eq!(
+            gitlab_url("https://gitlab.example.com", "group/app", &item.tail).as_deref(),
+            Some("https://gitlab.example.com/group/app/-/commit/c5feabde2d8cd023215af4d2ceeb7a64839fc428")
+        );
+
+        let issue = json!({
+            "id": 1,
+            "project_id": 1,
+            "action_name": "opened",
+            "target_type": "Issue",
+            "target_iid": 53,
+            "target_title": "Login fails",
+            "author_username": "user3",
+            "created_at": "2017-02-09T10:43:19.667Z"
+        });
+        let item = map_gitlab_event(&issue).unwrap();
+        assert_eq!(item.kind, "issue");
+        assert_eq!(
+            gitlab_url("https://gitlab.example.com", "group/app", &item.tail).as_deref(),
+            Some("https://gitlab.example.com/group/app/-/issues/53")
+        );
+    }
+
+    #[test]
+    fn membership_noise_and_system_notes_are_dropped() {
+        assert!(map_gitlab_event(&json!({"id": 1, "action_name": "joined"})).is_none());
+        let note = json!({
+            "id": 7,
+            "action_name": "commented on",
+            "target_type": "Note",
+            "note": { "body": "assigned to @root", "system": true, "noteable_type": "Issue", "noteable_iid": 4 }
+        });
+        assert!(map_gitlab_event(&note).is_none());
     }
 }

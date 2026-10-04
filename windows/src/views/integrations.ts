@@ -241,6 +241,44 @@ function githubCard(): HTMLElement {
   );
 }
 
+function gitlabLabel(event: Record<string, unknown>): string {
+  const project = String(event.project ?? "").split("/").filter(Boolean).pop() ?? "";
+  const title = String(event.title ?? "").trim();
+  const kind = String(event.kind ?? "");
+  const iid = typeof event.iid === "number" ? String(event.iid) : "";
+  const ref = String(event.ref ?? "");
+  const head =
+    kind === "issue" && iid ? `${project}#${iid}`
+    : kind === "merge" && iid ? `${project}!${iid}`
+    : ref ? `${project} ${ref}`.trim()
+    : project;
+  return [head, title].filter(Boolean).join(" · ") || t("gitlab.event");
+}
+
+function gitlabCard(): HTMLElement {
+  const events = arr("integration_gitlab", "events");
+  const rows = h("div", { class: "int-rows" });
+  if (events.length === 0) {
+    rows.append(h("div", { class: "int-empty", text: t("gitlab.empty") }));
+  }
+  events.slice(0, 3).forEach((event, i) => {
+    const accent = event.failure ? "#F4505E" : "#E24329";
+    const row = listRow(
+      accent,
+      i === 0,
+      h("span", { class: "int-name", text: gitlabLabel(event) }),
+      h("span", { class: "int-ago", text: timeAgo(event.createdAt) }),
+    );
+    const url = event.url;
+    if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => void Bridge.openUrl(url));
+    }
+    rows.append(row);
+  });
+  return h("div", { class: "int-card" }, header("#E24329", "GitLab", t("gitlab.kind")), rows);
+}
+
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
 function stripeCard(): HTMLElement {
@@ -404,6 +442,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "emails").length > 0;
     case "integration_github":
       return get(id).totalRepos != null;
+    case "integration_gitlab":
+      return info.loaded;
     case "integration_stripe":
       return info.loaded;
     case "integration_notion":
@@ -432,6 +472,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return resendCard();
     case "integration_github":
       return githubCard();
+    case "integration_gitlab":
+      return gitlabCard();
     case "integration_stripe":
       return stripeCard();
     case "integration_notion":

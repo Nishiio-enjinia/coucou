@@ -224,6 +224,7 @@
   "int.resendFrom": "From address  (you@yourdomain.com)",
   "int.n8nUrl": "Instance URL  (https://…)",
   "int.githubHint": "Classic token with repo scope, or fine-grained with read access to Pull requests, Commit statuses and Actions.",
+  "int.gitlabHint": "Personal token with the read_api scope. The URL is your GitLab, for example https://gitlab.com.",
   "int.stripeKey": "Secret key  (sk_live_… or sk_test_…)",
   "int.calcomKey": "API key  (cal_live_…)",
   "int.notionKey": "Integration token  (secret_…)",
@@ -297,6 +298,9 @@
   "github.load": "Load list",
   "github.clear": "Clear",
   "github.watching": "Watching {count} of {total}",
+  "gitlab.kind": "Activity",
+  "gitlab.empty": "Nothing yet",
+  "gitlab.event": "Event",
 
   "status.keySaved": "✓ Key saved.",
   "status.googleSaved": "✓ Google key saved.",
