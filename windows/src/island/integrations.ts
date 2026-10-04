@@ -37,6 +37,12 @@ export async function refreshConfigured() {
     data: {}, error: null, loaded: false, configured: false,
   };
   State.integrations.integration_claude = { ...claude, configured: hooks };
+  const rows = (await Bridge.idesStatus()) ?? [];
+  const cursorHooks = rows.find((row) => row.id === "cursor")?.installed ?? false;
+  const cursor = State.integrations.agent_cursor ?? {
+    data: {}, error: null, loaded: false, configured: false,
+  };
+  State.integrations.agent_cursor = { ...cursor, configured: cursorHooks };
   State.notify();
 }
 

@@ -4,7 +4,7 @@
 import { h, svg, clear } from "./dom";
 import { ICONS } from "./icons";
 import { t } from "../core/i18n";
-import { Bridge, type ChatContext } from "../core/bridge";
+import { Bridge, errorText, type ChatContext } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State, type ChatMessage } from "../core/state";
 import type { ViewHost } from "./views";
@@ -82,7 +82,7 @@ export function buildPrompt(onHeightChange: () => void): ViewHost {
       Sound.play("finish");
     } catch (err) {
       State.stateOverride = null;
-      State.noteMessage = String(err).replace(/^Error:\s*/, "");
+      State.noteMessage = errorText(err) || t("chat.ollamaDown");
       State.view = "note";
       Sound.play("error");
     } finally {

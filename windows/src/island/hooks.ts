@@ -36,6 +36,15 @@ function validateAgent(raw: string | undefined): string | null {
 
 const FALLBACK_COLORS = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"];
 
+/** Catalog agents keep their name, color, and the pill after the session ends. */
+const KNOWN_AGENTS: Record<string, { name: string; color: string; persist: boolean }> = {
+  cursor: { name: "Cursor", color: "#C0C4CC", persist: true },
+};
+
+function agentLook(name: string): { name: string; color: string; persist: boolean } {
+  return KNOWN_AGENTS[name] ?? { name, color: agentColor(name), persist: false };
+}
+
 function agentColor(name: string): string {
   let h = 0;
   for (let i = 0; i < name.length; i++) {
@@ -63,6 +72,7 @@ function lastPathComponent(p: string): string {
 /** frenchStep() — same labels as the macOS app. */
 const TOOL_LABELS: Record<string, string> = {
   Bash: "Exécute",
+  Shell: "Exécute",
   Read: "Lit",
   Write: "Écrit",
   Edit: "Modifie",
@@ -157,8 +167,10 @@ function handleHook(island: Island, payload: HookPayload) {
   // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
   // "claude" is reserved; absent or invalid → Claude Code pill unchanged.
   const validAgent = validateAgent(payload.coucou_agent);
+  const look = validAgent ? agentLook(validAgent) : null;
   const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
+  const persist = look?.persist ?? false;
 
   const focused = State.focusId === agentId;
 
@@ -175,8 +187,14 @@ function handleHook(island: Island, payload: HookPayload) {
 
   /** Ensure the agent pill exists (no-op for Claude Code). */
   const ensurePill = () => {
-    if (isExternalAgent) {
-      State.upsertExternalAgent(agentId, validAgent!, agentColor(validAgent!));
+    if (isExternalAgent && look) {
+      State.upsertExternalAgent(agentId, look.name, look.color);
+      const task = State.tasks.find((x) => x.id === agentId);
+      if (task) {
+        task.name = look.name;
+        task.color = look.color;
+        if (cwd) task.sessionCwd = cwd;
+      }
     } else {
       upsert(projectName, cwd);
     }
@@ -237,11 +255,12 @@ function handleHook(island: Island, payload: HookPayload) {
       if (focused) surface("finished", true);
       else State.setPillBadge(agentId, "finished");
       window.setTimeout(() => {
-        if (isExternalAgent) {
+        if (isExternalAgent && !persist) {
           State.removeTask(agentId);
         } else {
           State.updateTask(agentId, "idle");
           State.setPillBadge(agentId, null);
+          if (!isExternalAgent) clearSession();
         }
       }, 5200);
       break;
@@ -254,11 +273,19 @@ function handleHook(island: Island, payload: HookPayload) {
       break;
 
     case "SessionEnd":
-      if (isExternalAgent) {
+      if (isExternalAgent && !persist) {
         State.removeTask(agentId);
       } else {
         State.updateTask(agentId, "idle");
-        clearSession();
+        State.setPillBadge(agentId, null);
+        if (!isExternalAgent) clearSession();
+        else {
+          const task = State.tasks.find((x) => x.id === agentId);
+          if (task) {
+            task.steps = [];
+            task.stepIndex = 0;
+          }
+        }
       }
       break;
 

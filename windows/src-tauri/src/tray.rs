@@ -46,6 +46,6 @@ pub fn refresh(app: &AppHandle) {
         }
     }
     if let Some(win) = app.get_webview_window("settings") {
-        let _ = win.set_title(crate::i18n::t("settings.windowTitle"));
+        let _ = win.set_title(&crate::i18n::t("settings.windowTitle"));
     }
 }

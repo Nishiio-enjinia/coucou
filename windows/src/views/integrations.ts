@@ -60,7 +60,8 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const error = info?.error ?? null;
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
-  const missing = task.id === "integration_claude" ? t("int.hooksMissing") : t("int.keyMissing");
+  const workspace = task.id === "integration_claude" || task.id === "agent_cursor";
+  const missing = workspace ? t("int.hooksMissing") : t("int.keyMissing");
   const label = error ?? (configured ? t("int.loading") : missing);
   const statusColor = error || !configured ? "#F4505E" : "#22C55E";
 
@@ -72,6 +73,15 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         style: `color:${task.color}b3`,
         text: t("int.openVSCode"),
         onclick: () => void Bridge.openInVSCode(task.sessionCwd ?? null),
+      }),
+    );
+  } else if (task.id === "agent_cursor") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}b3`,
+        text: t("int.openCursor"),
+        onclick: () => void Bridge.openCursor(task.sessionCwd ?? null),
       }),
     );
   } else if (task.id === "integration_n8n") {

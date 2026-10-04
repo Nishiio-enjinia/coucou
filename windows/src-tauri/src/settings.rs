@@ -16,17 +16,38 @@ pub struct Settings {
     pub screen: String,
     pub autostart: bool,
     pub hooks_installed: bool,
-    /// Claude model used by the chat. Changeable in the settings window.
+    /// Model used by the chat. A Claude id, or an Ollama model name.
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// "claude" or "ollama". Missing on older settings files means Claude.
+    #[serde(default = "default_chat_provider")]
+    pub chat_provider: String,
+    /// Ollama server. No API key — it stays on this machine.
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
     /// "system", "en" or "fr". Missing on older settings files means system.
     #[serde(default = "default_language")]
     pub language: String,
+    /// Workspace pill kept on the island. "integration_claude" or "agent_cursor".
+    #[serde(default = "default_main_pill")]
+    pub main_pill: String,
 }
 
 fn default_language() -> String {
     "system".into()
+}
+
+fn default_main_pill() -> String {
+    "integration_claude".into()
+}
+
+fn default_chat_provider() -> String {
+    "claude".into()
+}
+
+fn default_ollama_url() -> String {
+    "http://127.0.0.1:11434".into()
 }
 
 fn default_model() -> String {
@@ -50,7 +71,10 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            chat_provider: default_chat_provider(),
+            ollama_url: default_ollama_url(),
             language: default_language(),
+            main_pill: default_main_pill(),
         }
     }
 }
