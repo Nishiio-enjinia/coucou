@@ -3,6 +3,7 @@
 mod claude;
 mod files;
 mod hooks;
+mod i18n;
 mod integrations;
 mod island;
 mod log;
@@ -22,7 +23,7 @@ use tauri_plugin_autostart::{ManagerExt, MacosLauncher};
 
 use claude::{Chat, ChatContext, ChatReply};
 use files::DroppedFile;
-use hooks::{HookPreview, HookStatus};
+use hooks::{HookPreview, HookStatus, IdeChoice, IdeWrite, IdesPreview};
 use island::{PollGate, ScreenInfo};
 use pipe::Pending;
 use settings::Settings;
@@ -61,15 +62,21 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 
 #[tauri::command]
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
-    let (screen_changed, autostart_changed) = {
+    let (screen_changed, autostart_changed, language_changed) = {
         let mut current = shared.settings.lock().unwrap();
         let screen_changed = current.screen != settings.screen;
         let autostart_changed = current.autostart != settings.autostart;
+        let language_changed = current.language != settings.language;
         *current = settings.clone();
-        (screen_changed, autostart_changed)
+        // Write while holding the lock so two windows can't tear the file.
+        if let Err(err) = settings::save(&current) {
+            eprintln!("[coucou] could not save settings: {err}");
+        }
+        (screen_changed, autostart_changed, language_changed)
     };
-    if let Err(err) = settings::save(&settings) {
-        eprintln!("[coucou] could not save settings: {err}");
+    if language_changed {
+        crate::i18n::set_preference(&settings.language);
+        tray::refresh(&app);
     }
     if autostart_changed {
         let manager = app.autolaunch();
@@ -165,6 +172,42 @@ fn open_in_vscode(path: Option<String>) -> bool {
     false
 }
 
+/// Opens Cursor on the project folder when one was reported, or just the app.
+#[tauri::command]
+fn open_cursor(path: Option<String>) -> bool {
+    let path = path.filter(|p| !p.is_empty());
+    if let Some(p) = path.as_deref() {
+        let p = std::path::Path::new(p);
+        if !(p.is_absolute() && p.is_dir()) {
+            return false;
+        }
+    }
+    let Some(exe) = cursor_exe() else { return false };
+    let mut cmd = Command::new(exe);
+    if let Some(p) = path.as_deref() {
+        cmd.arg(p);
+    }
+    platform::no_console(&mut cmd).spawn().is_ok()
+}
+
+fn cursor_exe() -> Option<std::path::PathBuf> {
+    // The Start-menu install is Cursor.exe. `cursor` on PATH is often a `.cmd`
+    // shim, and CreateProcess will not launch a batch file.
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        for rel in [r"Programs\cursor\Cursor.exe", r"Programs\Cursor\Cursor.exe"] {
+            let candidate = std::path::PathBuf::from(&local).join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    platform::find_on_path("cursor").filter(|path| {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("com") || ext.is_empty()
+    })
+}
+
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
@@ -212,6 +255,37 @@ fn hooks_apply(
 }
 
 #[tauri::command]
+fn ides_status() -> Vec<hooks::IdeStatus> {
+    hooks::ides_status()
+}
+
+/// Diffs for every IDE whose desired state is not already on disk.
+#[tauri::command]
+fn ides_preview(choices: Vec<IdeChoice>) -> Result<IdesPreview, String> {
+    hooks::ides_preview(&choices)
+}
+
+/// Only ever called from an explicit click. Every fingerprint is checked
+/// before the first write, so one stale file blocks the whole batch.
+#[tauri::command]
+fn ides_apply(
+    app: AppHandle,
+    shared: State<Shared>,
+    plans: Vec<IdeWrite>,
+) -> Result<String, String> {
+    let backups = hooks::ides_write(&plans)?;
+    let claude_on = hooks::status().installed;
+    let updated = {
+        let mut current = shared.settings.lock().unwrap();
+        current.hooks_installed = claude_on;
+        let _ = settings::save(&current);
+        current.clone()
+    };
+    let _ = app.emit("settings-changed", updated);
+    Ok(backups.join("\n"))
+}
+
+#[tauri::command]
 fn approval_decision(app: AppHandle, request_id: String, decision: String) {
     pipe::answer(&app, &request_id, &decision);
 }
@@ -241,13 +315,34 @@ async fn chat_send(
     query: String,
     context: Option<ChatContext>,
 ) -> Result<ChatReply, String> {
-    let model = shared.settings.lock().unwrap().model.clone();
-    claude::send(&chat, &model, query, context).await
+    let (provider, url, model) = {
+        let current = shared.settings.lock().unwrap();
+        (
+            current.chat_provider.clone(),
+            current.ollama_url.clone(),
+            current.model.clone(),
+        )
+    };
+    claude::send(&chat, &provider, &url, &model, query, context).await
 }
 
 #[tauri::command]
 fn chat_reset(chat: State<Chat>) {
     chat.reset();
+}
+
+/// Models installed on the Ollama server at `url`.
+/// Sync command: an async one never replied, so the model menu stayed on
+/// "Loading models…".
+#[tauri::command]
+fn ollama_models(url: String) -> Result<Vec<String>, String> {
+    log::line(format!("ollama list {url}"));
+    let result = claude::ollama_models(&url);
+    log::line(match &result {
+        Ok(models) => format!("ollama list {} model(s)", models.len()),
+        Err(err) => format!("ollama list failed: {err}"),
+    });
+    result
 }
 
 /// Copies a dropped file into the inbox and reports its name back.
@@ -321,7 +416,7 @@ fn create_settings_window(app: &AppHandle) {
     let url = settings_page_url(app);
     match WebviewWindowBuilder::new(app, "settings", url)
         .additional_browser_args(BROWSER_ARGS)
-        .title("Settings — Coucou")
+        .title(i18n::t("settings.windowTitle"))
         .inner_size(560.0, 680.0)
         .min_inner_size(460.0, 480.0)
         .resizable(true)
@@ -383,16 +478,21 @@ pub fn run() {
             reposition,
             open_url,
             open_in_vscode,
+            open_cursor,
             quit_app,
             hooks_status,
             hooks_preview,
             hooks_apply,
+            ides_status,
+            ides_preview,
+            ides_apply,
             approval_decision,
             approval_ack,
             approval_decline,
             log_line,
             chat_send,
             chat_reset,
+            ollama_models,
             ingest_file,
             secret_present,
             secret_set,
@@ -404,6 +504,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
+            crate::i18n::set_preference(&loaded.language);
             tray::build(&handle)?;
             // Before the island: see create_settings_window.
             create_settings_window(&handle);

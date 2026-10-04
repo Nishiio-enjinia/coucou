@@ -12,7 +12,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Warm up Keychain cache on main thread BEFORE any poller or view touches it
         _ = KeychainStore.shared
         NSApp.setActivationPolicy(.accessory)
+        _ = AppState.shared
         setupMenuBarItem()
+        AppState.shared.onUiLanguageChange = { [weak self] in
+            self?.applyLanguageChrome()
+        }
         setupIsland()
     }
 
@@ -26,14 +30,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         button.image?.accessibilityDescription = "Coucou"
         button.image?.isTemplate = true
 
-        let menu = NSMenu()
-        menu.addItem(withTitle: "Open Coucou", action: #selector(openIsland), keyEquivalent: "")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        statusItem?.menu = makeMenu()
+    }
 
-        statusItem?.menu = menu
+    private func makeMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(withTitle: L10n.t("tray.open"), action: #selector(openIsland), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L10n.t("tray.settings"), action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: L10n.t("tray.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        return menu
+    }
+
+    private func applyLanguageChrome() {
+        statusItem?.menu = makeMenu()
+        settingsWindow?.title = L10n.t("settings.windowTitle")
     }
 
     // MARK: - Actions
@@ -62,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
                            styleMask: [.titled, .closable, .miniaturizable, .resizable],
                            backing: .buffered, defer: false)
-        win.title = "Settings — Coucou"
+        win.title = L10n.t("settings.windowTitle")
         let host = NSHostingView(rootView: SettingsView())
         host.sizingOptions = [.minSize]
         win.contentView = host

@@ -11,7 +11,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use crate::{platform, settings};
@@ -31,6 +31,20 @@ pub const HOOK_EVENTS: &[(&str, u64)] = &[
     ("StopFailure", 10),
     ("SubagentStart", 10),
     ("SubagentStop", 10),
+];
+
+/// Cursor's own hooks.json. Names stay in Cursor's spelling; the relay
+/// translates them. Tab hooks and per-token events are left out on purpose.
+const CURSOR_EVENTS: &[&str] = &[
+    "sessionStart",
+    "sessionEnd",
+    "beforeSubmitPrompt",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "subagentStart",
+    "subagentStop",
+    "stop",
 ];
 
 /// Marker that identifies a Coucou entry inside settings.json.
@@ -60,6 +74,14 @@ pub fn settings_path() -> PathBuf {
     platform::home_dir().join(".claude").join("settings.json")
 }
 
+fn read_json_at(path: &Path) -> Result<Value, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
+    }
+}
+
 /// Reads `~/.claude/settings.json`.
 ///
 /// The only error that means "start from nothing" is the file not being there.
@@ -67,14 +89,7 @@ pub fn settings_path() -> PathBuf {
 /// we cannot parse — is reported, because the alternative is treating somebody's
 /// unreadable settings as an empty object and then writing that back over them.
 fn read_settings() -> Result<Value, String> {
-    let path = settings_path();
-    match std::fs::read(&path) {
-        Ok(bytes) => parse_settings(&bytes, &path.display().to_string()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-        // A lock, a permission problem, a bad drive: all of them mean we do not
-        // know what is in there, and not knowing is not the same as empty.
-        Err(err) => Err(format!("Can't read {}: {err}", path.display())),
-    }
+    read_json_at(&settings_path())
 }
 
 /// The parsing half of `read_settings`, split out so it can be tested without a
@@ -212,9 +227,13 @@ fn stamp() -> String {
     )
 }
 
+fn backup_for(path: &Path) -> PathBuf {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("hooks.json");
+    path.with_file_name(format!("{name}.bak-{}", stamp()))
+}
+
 fn backup_path() -> PathBuf {
-    let p = settings_path();
-    p.with_file_name(format!("settings.json.bak-{}", stamp()))
+    backup_for(&settings_path())
 }
 
 /// Identifies the exact bytes a preview was computed from. FNV-1a is plenty:
@@ -228,11 +247,15 @@ fn fingerprint(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-fn current_fingerprint() -> String {
-    match std::fs::read(settings_path()) {
+fn fingerprint_of(path: &Path) -> String {
+    match std::fs::read(path) {
         Ok(bytes) => fingerprint(&bytes),
         Err(_) => fingerprint(b""),
     }
+}
+
+fn current_fingerprint() -> String {
+    fingerprint_of(&settings_path())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -317,6 +340,328 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
         return Err(format!("write failed: {err}"));
     }
     Ok(backup.to_string_lossy().to_string())
+}
+
+// ── IDEs: Claude Code and Cursor, one or several ─────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ide {
+    Claude,
+    Cursor,
+}
+
+impl Ide {
+    fn parse(id: &str) -> Result<Self, String> {
+        match id {
+            "claude" => Ok(Self::Claude),
+            "cursor" => Ok(Self::Cursor),
+            _ => Err(format!("Unknown IDE \"{id}\".")),
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Cursor => "cursor",
+        }
+    }
+
+    fn path(self) -> PathBuf {
+        match self {
+            Self::Claude => settings_path(),
+            Self::Cursor => platform::home_dir().join(".cursor").join("hooks.json"),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeStatus {
+    pub id: String,
+    pub installed: bool,
+    pub settings_path: String,
+    pub hook_path: String,
+    pub hook_ready: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeChoice {
+    pub id: String,
+    pub install: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeChange {
+    pub id: String,
+    pub install: bool,
+    pub diff: String,
+    pub backup: String,
+    pub settings_path: String,
+    pub fingerprint: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdesPreview {
+    pub changes: Vec<IdeChange>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IdeWrite {
+    pub id: String,
+    pub install: bool,
+    pub fingerprint: String,
+}
+
+fn cursor_command(event: &str) -> String {
+    let exe = settings::hook_exe_path();
+    #[cfg(windows)]
+    {
+        format!("\"{}\" --agent cursor {event}", exe.to_string_lossy())
+    }
+    #[cfg(unix)]
+    {
+        format!(
+            "{} --agent cursor {event}",
+            sh_quote(&exe.to_string_lossy())
+        )
+    }
+}
+
+fn cursor_entry_is_ours(entry: &Value) -> bool {
+    entry
+        .get("command")
+        .and_then(Value::as_str)
+        .map(|c| c.contains(MARKER) && c.contains("--agent cursor"))
+        .unwrap_or(false)
+}
+
+fn cursor_installed(root: &Value) -> bool {
+    root.get("hooks")
+        .and_then(Value::as_object)
+        .map(|hooks| {
+            hooks
+                .values()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(cursor_entry_is_ours)
+        })
+        .unwrap_or(false)
+}
+
+/// Cursor stores a flat command list, not Claude's nested `{ hooks: [...] }`.
+fn cursor_merged(existing: &Value) -> Result<Value, String> {
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    if !root.contains_key("version") {
+        root.insert("version".into(), json!(1));
+    }
+    if let Some(raw) = root.get("hooks") {
+        if !raw.is_object() {
+            return Err(
+                "hooks.json: \"hooks\" has an unexpected type — Coucou has not touched it.".into(),
+            );
+        }
+    }
+    let mut hooks = root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(Map::new);
+
+    for event in CURSOR_EVENTS {
+        if let Some(raw) = hooks.get(*event) {
+            if !raw.is_array() {
+                return Err(format!(
+                    "hooks.json: \"hooks\".\"{event}\" has an unexpected type — Coucou has not touched it."
+                ));
+            }
+        }
+        let mut list = hooks
+            .get(*event)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        list.retain(|entry| !cursor_entry_is_ours(entry));
+        list.push(json!({
+            "command": cursor_command(event),
+            "timeout": 10,
+        }));
+        hooks.insert((*event).to_string(), Value::Array(list));
+    }
+    root.insert("hooks".into(), Value::Object(hooks));
+    Ok(Value::Object(root))
+}
+
+fn cursor_without_ours(existing: &Value) -> Result<Value, String> {
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
+        return Ok(Value::Object(root));
+    };
+    let mut out = Map::new();
+    for (event, value) in hooks {
+        match value.as_array() {
+            Some(list) => {
+                let kept: Vec<Value> = list
+                    .iter()
+                    .filter(|e| !cursor_entry_is_ours(e))
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    out.insert(event, Value::Array(kept));
+                }
+            }
+            None => {
+                return Err(format!(
+                    "hooks.json: \"hooks\".\"{event}\" has an unexpected type — Coucou has not touched it."
+                ));
+            }
+        }
+    }
+    if out.is_empty() {
+        root.remove("hooks");
+    } else {
+        root.insert("hooks".into(), Value::Object(out));
+    }
+    Ok(Value::Object(root))
+}
+
+fn claude_installed(root: &Value) -> bool {
+    root.get("hooks")
+        .and_then(Value::as_object)
+        .map(|hooks| {
+            hooks
+                .values()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(entry_is_ours)
+        })
+        .unwrap_or(false)
+}
+
+fn next_for(ide: Ide, current: &Value, install: bool) -> Result<Value, String> {
+    match ide {
+        Ide::Claude => Ok(if install { merged(current) } else { without_ours(current) }),
+        Ide::Cursor => {
+            if install {
+                cursor_merged(current)
+            } else {
+                cursor_without_ours(current)
+            }
+        }
+    }
+}
+
+pub fn ides_status() -> Vec<IdeStatus> {
+    let hook_path = settings::hook_exe_path();
+    let ready = hook_path.exists();
+    let hook_path = hook_path.to_string_lossy().to_string();
+    [Ide::Claude, Ide::Cursor]
+        .into_iter()
+        .map(|ide| {
+            let path = ide.path();
+            let installed = read_json_at(&path)
+                .ok()
+                .map(|root| match ide {
+                    Ide::Claude => claude_installed(&root),
+                    Ide::Cursor => cursor_installed(&root),
+                })
+                .unwrap_or(false);
+            IdeStatus {
+                id: ide.id().into(),
+                installed,
+                settings_path: path.to_string_lossy().to_string(),
+                hook_path: hook_path.clone(),
+                hook_ready: ready,
+            }
+        })
+        .collect()
+}
+
+pub fn ides_preview(choices: &[IdeChoice]) -> Result<IdesPreview, String> {
+    let mut changes = Vec::new();
+    for choice in choices {
+        let ide = Ide::parse(&choice.id)?;
+        let path = ide.path();
+        let current = read_json_at(&path)?;
+        let next = next_for(ide, &current, choice.install)?;
+        if pretty(&current) == pretty(&next) {
+            continue;
+        }
+        changes.push(IdeChange {
+            id: ide.id().into(),
+            install: choice.install,
+            diff: unified_diff(&pretty(&current), &pretty(&next)),
+            backup: backup_for(&path).to_string_lossy().to_string(),
+            settings_path: path.to_string_lossy().to_string(),
+            fingerprint: fingerprint_of(&path),
+        });
+    }
+    Ok(IdesPreview { changes })
+}
+
+/// Writes every reviewed file, but only after every fingerprint still matches.
+/// A mismatch writes nothing at all.
+pub fn ides_write(plans: &[IdeWrite]) -> Result<Vec<String>, String> {
+    let mut prepared = Vec::new();
+    for plan in plans {
+        let ide = Ide::parse(&plan.id)?;
+        let path = ide.path();
+        let current = read_json_at(&path)?;
+        if fingerprint_of(&path) != plan.fingerprint {
+            return Err(format!(
+                "{} changed since the preview. Nothing was written — review the new diff.",
+                path.display()
+            ));
+        }
+        let next = next_for(ide, &current, plan.install)?;
+        prepared.push((path, next));
+    }
+    let mut backups = Vec::new();
+    for (path, next) in prepared {
+        backups.push(commit_json(&path, &next)?);
+    }
+    Ok(backups.into_iter().filter(|p| !p.is_empty()).collect())
+}
+
+fn commit_json(path: &Path, next: &Value) -> Result<String, String> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let backup = backup_for(path);
+    let copied = if path.exists() {
+        std::fs::copy(path, &backup).map_err(|e| format!("backup failed: {e}"))?;
+        true
+    } else {
+        false
+    };
+    let mut text = pretty(next);
+    text.push('\n');
+    let path = {
+        #[cfg(unix)]
+        {
+            std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        }
+        #[cfg(not(unix))]
+        {
+            path.to_path_buf()
+        }
+    };
+    let temp = path.with_extension(format!("json.coucou-{}", std::process::id()));
+    if let Err(err) = write_like(&temp, &path, text.as_bytes()) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("write failed: {err}"));
+    }
+    if let Err(err) = std::fs::rename(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("write failed: {err}"));
+    }
+    Ok(if copied {
+        backup.to_string_lossy().to_string()
+    } else {
+        String::new()
+    })
 }
 
 /// Writes `bytes` to `temp`, which is about to replace `original`.
@@ -572,6 +917,31 @@ mod tests {
         // And removing ours puts it back exactly as it was.
         let cleaned = without_ours(&after);
         assert_eq!(cleaned, existing);
+    }
+
+    #[test]
+    fn cursor_merge_keeps_foreign_commands_and_removal_drops_only_ours() {
+        let existing = json!({
+            "version": 1,
+            "hooks": {
+                "preToolUse": [{ "command": "someone-else.sh" }],
+                "stop": [{ "command": "keep.sh" }]
+            }
+        });
+        let after = cursor_merged(&existing).expect("merge");
+        let pre = after["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre[0]["command"], "someone-else.sh");
+        assert!(pre[1]["command"].as_str().unwrap().contains("--agent cursor"));
+        assert!(after["hooks"]["sessionStart"].is_array());
+        assert_eq!(after["version"], 1);
+
+        let cleaned = cursor_without_ours(&after).expect("clean");
+        assert_eq!(cleaned["hooks"]["preToolUse"][0]["command"], "someone-else.sh");
+        assert_eq!(cleaned["hooks"]["stop"][0]["command"], "keep.sh");
+        assert!(cleaned["hooks"].get("sessionStart").is_none());
+
+        let bad = json!({ "hooks": { "preToolUse": "nope" } });
+        assert!(cursor_merged(&bad).is_err());
     }
 
     #[test]

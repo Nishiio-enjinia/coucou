@@ -49,6 +49,7 @@ export class Island {
 
   private header!: ViewHost;
   private views!: Map<IslandViewName, ViewHost>;
+  private actions!: ViewActions;
   private uploadCanvas!: UploadCanvas;
 
   private width = new Tracked(NOTCH_W);
@@ -101,10 +102,30 @@ export class Island {
     });
   }
 
+  /** Rebuilds the translated DOM after a language change. Session state stays. */
+  relocalize() {
+    this.lastSyncedView = null;
+    this.mountChrome();
+    State.notify();
+  }
+
+  private mountChrome() {
+    this.header = buildHeader(this.actions);
+    this.views = buildViews(this.actions, () => this.animateGeometry(false));
+    if (!this.viewsEl) this.viewsEl = h("div", { id: "views" });
+    else this.viewsEl.replaceChildren();
+    for (const view of this.views.values()) this.viewsEl.append(view.el);
+    if (!this.contentEl) {
+      this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl);
+    } else {
+      this.contentEl.replaceChildren(this.header.el, this.viewsEl);
+    }
+  }
+
   // ── DOM ─────────────────────────────────────────────────────────────────────
 
   private build() {
-    const actions: ViewActions = {
+    this.actions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
       setFocus: (id) => {
@@ -128,6 +149,11 @@ export class Island {
           integration_calcom: "https://app.cal.com/bookings",
         };
         if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
+        else if (task.id === "agent_cursor") void Bridge.openCursor(task.sessionCwd ?? null);
+        else if (task.id === "integration_gitlab") {
+          const url = State.integrations.integration_gitlab?.data?.webUrl;
+          if (typeof url === "string") void Bridge.openUrl(url);
+        }
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
@@ -176,11 +202,7 @@ export class Island {
     this.miniGrid = h("div", { id: "mini-grid" });
     this.countdown = h("div", { id: "countdown" });
 
-    this.header = buildHeader(actions);
-    this.views = buildViews(actions, () => this.animateGeometry(false));
-    this.viewsEl = h("div", { id: "views" });
-    for (const v of this.views.values()) this.viewsEl.append(v.el);
-    this.contentEl = h("div", { id: "content" }, this.header.el, this.viewsEl);
+    this.mountChrome();
 
     // The drop sequence draws the card, the bar and its own Mochi. It sits under
     // the header, which stays visible on top of it exactly as on macOS.

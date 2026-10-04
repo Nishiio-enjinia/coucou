@@ -57,12 +57,18 @@ const task = (
 });
 
 /** AgentTask.integrationAgents — same ids, names and colours as macOS. */
-export const INTEGRATION_AGENTS: AgentTask[] = [
+export const WORKSPACE_PILLS: AgentTask[] = [
   task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
+  task("agent_cursor", "Cursor", "#C0C4CC", "agent"),
+];
+
+export const INTEGRATION_AGENTS: AgentTask[] = [
+  ...WORKSPACE_PILLS,
   task("integration_resend", "Resend", "#22C55E", "n8n"),
   task("integration_n8n", "n8n", "#F29B38", "n8n"),
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
   task("integration_github", "GitHub", "#F4505E", "n8n"),
+  task("integration_gitlab", "GitLab", "#E24329", "n8n"),
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
@@ -70,7 +76,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_gitlab", "integration_notion", "integration_calcom", "integration_stripe",
 ];
 
 /** What an integration poller last reported. */
@@ -90,8 +96,16 @@ export interface Settings {
   screen: "primary" | "cursor";
   autostart: boolean;
   hooksInstalled: boolean;
-  /** Claude model used by the chat. */
+  /** Model used by the chat: a Claude id, or an Ollama model name. */
   model: string;
+  /** "claude" talks to Anthropic. "ollama" talks to a local server. */
+  chatProvider: "claude" | "ollama";
+  /** Ollama base URL, without /v1. */
+  ollamaUrl: string;
+  /** "system" follows the OS. "en" and "fr" are explicit. */
+  language: "system" | "en" | "fr";
+  /** Workspace pill kept on the island. */
+  mainPill: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -106,6 +120,10 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  chatProvider: "claude",
+  ollamaUrl: "http://127.0.0.1:11434",
+  language: "system",
+  mainPill: "integration_claude",
 };
 
 type Listener = () => void;
@@ -199,32 +217,37 @@ class AppState {
     this.notify();
   }
 
-  /** loadIntegrationTasks() — VS Code always on, the rest opt-in (max 4). */
+  /** The workspace pill that stays on the island. Anything else falls back to VS Code. */
+  mainPill(): string {
+    const id = this.settings.mainPill;
+    return WORKSPACE_PILLS.some((pill) => pill.id === id) ? id : "integration_claude";
+  }
+
+  /** loadIntegrationTasks() — the main workspace pill is always on, the rest opt-in (max 4). */
   loadIntegrationTasks() {
+    const main = this.mainPill();
     for (const proto of INTEGRATION_AGENTS) {
-      const shouldLoad =
-        proto.id === "integration_claude" || this.settings.activeIntegrations.includes(proto.id);
+      const workspace = WORKSPACE_PILLS.some((pill) => pill.id === proto.id);
+      const shouldLoad = workspace
+        ? proto.id === main
+        : this.settings.activeIntegrations.includes(proto.id);
       const idx = this.tasks.findIndex((t) => t.id === proto.id);
       if (shouldLoad && idx < 0) this.tasks.push({ ...proto, steps: [] });
       if (!shouldLoad && idx >= 0) this.tasks.splice(idx, 1);
     }
-    // Order: integration_claude first, then agent_* pills (visible in slice(0,4)),
-    // then other integrations in declaration order.
+    // Order: the main workspace pill first, then agent_* pills, then services.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
     this.tasks.sort((a, b) => {
+      if (a.id === main) return -1;
+      if (b.id === main) return 1;
       const isAgentA = a.id.startsWith("agent_");
       const isAgentB = b.id.startsWith("agent_");
-      // integration_claude always first
-      if (a.id === "integration_claude") return -1;
-      if (b.id === "integration_claude") return 1;
-      // agent_* before other integrations; preserve insertion order among themselves
       if (isAgentA && !isAgentB) return -1;
       if (isAgentB && !isAgentA) return 1;
       if (isAgentA && isAgentB) return 0;
-      // both known integrations → declaration order
       return order.indexOf(a.id) - order.indexOf(b.id);
     });
-    if (!this.focusId) this.focusId = "integration_claude";
+    if (!this.focusId || !this.tasks.some((t) => t.id === this.focusId)) this.focusId = main;
     this.notify();
   }
 
@@ -232,15 +255,16 @@ class AppState {
     const idx = this.tasks.findIndex((t) => t.id === id);
     if (idx < 0) return;
     this.tasks.splice(idx, 1);
-    if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? "integration_claude";
+    if (this.focusId === id) this.focusId = this.tasks[0]?.id ?? this.mainPill();
     this.notify();
   }
 
   /** Creates a dynamic agent_ pill on first event; no-ops if it already exists.
-   *  Inserted right after integration_claude so it appears in the visible slice(0,4). */
+   *  Inserted right after the main workspace pill so it stays in the visible slice. */
   upsertExternalAgent(id: string, name: string, color: string) {
     if (this.tasks.some((t) => t.id === id)) return;
-    const at = this.tasks.findIndex((t) => t.id === "integration_claude") + 1;
+    const mainAt = this.tasks.findIndex((t) => t.id === this.mainPill());
+    const at = mainAt < 0 ? this.tasks.length : mainAt + 1;
     this.tasks.splice(at, 0, {
       id, name, color,
       state: "idle", stepIndex: 0, steps: [],
@@ -251,11 +275,11 @@ class AppState {
   }
 
   toggleIntegration(id: string) {
-    if (id === "integration_claude") return;
+    if (WORKSPACE_PILLS.some((pill) => pill.id === id)) return;
     const active = this.settings.activeIntegrations;
     if (active.includes(id)) {
       this.settings.activeIntegrations = active.filter((x) => x !== id);
-      if (this.focusId === id) this.focusId = "integration_claude";
+      if (this.focusId === id) this.focusId = this.mainPill();
     } else {
       if (active.length >= 4) return;
       this.settings.activeIntegrations = [...active, id];

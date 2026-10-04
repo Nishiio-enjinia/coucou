@@ -54,6 +54,8 @@ export const Bridge = {
 
   /** "Open terminal" → opens the folder in VS Code when `code` is on PATH. */
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
+  /** Opens Cursor, on a project folder when the hook reported one. */
+  openCursor: (path: string | null) => call<boolean>("open_cursor", { path }),
 
   quit: () => call<void>("quit_app"),
 
@@ -73,6 +75,12 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
 
+  idesStatus: () => call<IdeStatus[]>("ides_status"),
+  idesPreview: (choices: { id: string; install: boolean }[]) =>
+    callOrThrow<IdesPreview>("ides_preview", { choices }),
+  idesApply: (plans: { id: string; install: boolean; fingerprint: string }[]) =>
+    callOrThrow<string>("ides_apply", { plans }),
+
   approvalDecision: (requestId: string, decision: "allow" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
   /** "The card is up" — until this lands the relay only waits a moment. */
@@ -85,6 +93,8 @@ export const Bridge = {
   chatSend: (query: string, context: ChatContext | null) =>
     callOrThrow<{ text: string }>("chat_send", { query, context }),
   chatReset: () => call<void>("chat_reset"),
+  /** Models installed on a local Ollama server. */
+  ollamaModels: (url: string) => callOrThrow<string[]>("ollama_models", { url }),
   /** Copies a dropped file into the inbox. */
   ingestFile: (path: string) => callOrThrow<DroppedFile>("ingest_file", { path }),
   /** Only ever tells you whether a key exists — never its value. */
@@ -133,10 +143,41 @@ export interface HookPreview {
   fingerprint: string;
 }
 
+export interface IdeStatus {
+  id: "claude" | "cursor";
+  installed: boolean;
+  settingsPath: string;
+  hookPath: string;
+  hookReady: boolean;
+}
+
+export interface IdeChange {
+  id: "claude" | "cursor";
+  install: boolean;
+  diff: string;
+  backup: string;
+  settingsPath: string;
+  fingerprint: string;
+}
+
+export interface IdesPreview {
+  changes: IdeChange[];
+}
+
 /** Same as `call`, but surfaces the error so the UI can show what went wrong. */
 async function callOrThrow<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!IS_TAURI) throw new Error("not running inside Coucou");
   return invoke<T>(cmd, args);
+}
+
+/** Text of a Tauri rejection, an `Error`, or a plain string. */
+export function errorText(err: unknown): string {
+  let raw = "";
+  if (typeof err === "string") raw = err;
+  else if (err instanceof Error && err.message) raw = err.message;
+  else if (err && typeof err === "object" && "message" in err) raw = String((err as { message: unknown }).message);
+  else raw = String(err);
+  return raw.replace(/^Error:\s*/, "").trim();
 }
 
 export type BridgeEvent =

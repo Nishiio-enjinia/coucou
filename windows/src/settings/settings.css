@@ -249,6 +249,14 @@ select option {
   font: 400 12px var(--font);
   border-radius: 10px;
   padding: 8px 12px;
+  white-space: pre-wrap;
+}
+
+.row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--ink);
+  flex: 0 0 auto;
 }
 
 .notice.ok {

@@ -53,6 +53,20 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled") }
     }
 
+    /// "system", "en" or "fr". Missing means the OS language.
+    @Published var uiLanguage: String = "system" {
+        didSet {
+            let allowed = (uiLanguage == "en" || uiLanguage == "fr") ? uiLanguage : "system"
+            if uiLanguage != allowed { uiLanguage = allowed }
+            UserDefaults.standard.set(uiLanguage, forKey: "uiLanguage")
+            L10n.preference = uiLanguage
+            onUiLanguageChange?()
+        }
+    }
+
+    /// Menu bar and the settings window title. Set by AppDelegate.
+    var onUiLanguageChange: (@MainActor () -> Void)?
+
     // Mochi outfit selection — persisted
     @Published var mochiOutfitSelection: Outfit = .auto {
         didSet { Outfit.stored = mochiOutfitSelection }
@@ -393,6 +407,9 @@ final class AppState: ObservableObject {
         let ud = UserDefaults.standard
 
         if let v = ud.object(forKey: "soundEnabled") as? Bool   { soundEnabled = v }
+        if let v = ud.string(forKey: "uiLanguage"),
+           v == "system" || v == "en" || v == "fr" { uiLanguage = v }
+        L10n.preference = uiLanguage
         if let v = ud.object(forKey: "soundVolume")  as? Double { soundVolume  = v }
         mochiOutfitSelection = Outfit.stored
         if let v = ud.string(forKey: "claudeModel"),
@@ -645,14 +662,10 @@ struct VercelDeployment: Identifiable {
     let branch: String?
 
     var isSuccess: Bool { state == "READY" }
-    var statusLabel: String { isSuccess ? "Ready" : (state == "CANCELED" ? "Canceled" : "Error") }
-    var timeAgo: String {
-        let diff = Date().timeIntervalSince(createdAt)
-        if diff < 60    { return "just now" }
-        if diff < 3600  { return "\(Int(diff/60))m" }
-        if diff < 86400 { return "\(Int(diff/3600))h" }
-        return "\(Int(diff/86400))d"
+    var statusLabel: String {
+        isSuccess ? L10n.t("int.ready") : (state == "CANCELED" ? L10n.t("int.canceled") : L10n.t("int.error"))
     }
+    var timeAgo: String { L10n.ago(since: createdAt) }
 }
 
 // MARK: - Resend
@@ -668,13 +681,7 @@ struct ResendEmail: Identifiable {
         guard let first = to.first else { return "?" }
         return first.components(separatedBy: "@").first ?? first
     }
-    var timeAgo: String {
-        let diff = Date().timeIntervalSince(createdAt)
-        if diff < 60    { return "just now" }
-        if diff < 3600  { return "\(Int(diff/60))m" }
-        if diff < 86400 { return "\(Int(diff/3600))h" }
-        return "\(Int(diff/86400))d"
-    }
+    var timeAgo: String { L10n.ago(since: createdAt) }
     var isDelivered: Bool { lastEvent == "delivered" }
 }
 
@@ -697,13 +704,7 @@ struct StripePayment: Identifiable, Equatable {
 
     var amountFormatted: String { String(format: "%.2f", Double(amount) / 100.0) }
     var isSuccess: Bool { status == "succeeded" }
-    var timeAgo: String {
-        let diff = Date().timeIntervalSince(createdAt)
-        if diff < 60    { return "just now" }
-        if diff < 3600  { return "\(Int(diff/60))m" }
-        if diff < 86400 { return "\(Int(diff/3600))h" }
-        return "\(Int(diff/86400))d"
-    }
+    var timeAgo: String { L10n.ago(since: createdAt) }
 }
 
 // MARK: - Cal.com
@@ -737,13 +738,7 @@ struct NotionPage: Identifiable {
     let lastEditedAt: Date
     let url: String
 
-    var timeAgo: String {
-        let diff = Date().timeIntervalSince(lastEditedAt)
-        if diff < 60 { return "now" }
-        if diff < 3600 { return "\(Int(diff/60))m" }
-        if diff < 86400 { return "\(Int(diff/3600))h" }
-        return "\(Int(diff/86400))d"
-    }
+    var timeAgo: String { L10n.ago(since: lastEditedAt, brief: true) }
 }
 
 // MARK: - Chat

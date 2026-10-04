@@ -263,14 +263,14 @@ struct EmptyStateView: View {
             CardBackground(wash: nil)
             HStack(spacing: 16) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Nothing running right now.")
+                    Text(L10n.t("empty.title"))
                         .font(.system(size: 15, weight: .semibold))
-                    Text("Drop a file or window, or ask me anything.")
+                    Text(L10n.t("empty.sub"))
                         .font(.system(size: 13))
                         .foregroundColor(Color(hex: "#9398A1"))
                 }
                 Spacer()
-                PrimaryButton("Ask Claude") {
+                PrimaryButton(L10n.t("empty.ask")) {
                     state.view = .prompt
                 }
             }
@@ -294,15 +294,15 @@ struct ApprovalView: View {
                 AgentWho(task: state.focusTask, label: "needs permission")
                 CodeBlock(text: approval?.command ?? approval?.tool ?? "…")
                 HStack(spacing: 8) {
-                    SecondaryButton("Deny") {
+                    SecondaryButton(L10n.t("approval.deny")) {
                         HookServer.shared.sendApprovalDecision("deny")
                     }
-                    PrimaryButton("Allow") {
+                    PrimaryButton(L10n.t("approval.allow")) {
                         HookServer.shared.sendApprovalDecision("allow")
                     }
                     // Codex rejects updatedPermissions, so "Always" is not offered
                     if approval?.pillId != "agent_codex" {
-                        SecondaryButton("Always") {
+                        SecondaryButton(L10n.t("approval.always")) {
                             HookServer.shared.sendApprovalDecision("always")
                         }
                     }
@@ -354,7 +354,7 @@ struct QuestionView: View {
                                 .font(.system(size: 10))
                                 .foregroundColor(Color(hex: "#6B7079"))
                         }
-                        Button("Reply in terminal") { HookServer.shared.sendQuestionAsk() }
+                        Button(L10n.t("question.terminalBtn")) { HookServer.shared.sendQuestionAsk() }
                             .buttonStyle(.plain)
                             .font(.system(size: 10))
                             .foregroundColor(Color(hex: "#6B7079"))
@@ -373,7 +373,7 @@ struct QuestionView: View {
                     // Options (wrapping) or "Other…" compact inline row
                     if curOther {
                         HStack(spacing: 6) {
-                            TextField("Your answer…", text: Binding(
+                            TextField(L10n.t("question.placeholder"), text: Binding(
                                 get: { qi < otherTexts.count ? otherTexts[qi] : "" },
                                 set: { v in if qi < otherTexts.count { otherTexts[qi] = v } }
                             ))
@@ -429,7 +429,7 @@ struct QuestionView: View {
                                 }
                             }
                             // "Other…" implicit free-text option
-                            SecondaryButton("Other…") {
+                            SecondaryButton(L10n.t("question.other")) {
                                 if qi < showOther.count { showOther[qi] = true }
                             }
                         }
@@ -512,14 +512,14 @@ struct ErrorView: View {
             CardBackground(wash: .red)
             VStack(alignment: .leading, spacing: 5) {
                 AgentWho(task: state.focusTask, label: "n8n")
-                Text("Workflow stopped.")
+                Text(L10n.t("error.workflow"))
                     .font(.system(size: 15, weight: .semibold))
-                Text("Gmail node timed out after 30s. Retry or open n8n.")
+                Text(L10n.t("error.gmailTimeout"))
                     .font(.system(size: 12))
                     .foregroundColor(Color(hex: "#FF8D97"))
                 HStack(spacing: 8) {
-                    PrimaryButton("Retry") { /* retry */ }
-                    SecondaryButton("Open in n8n") { /* open */ }
+                    PrimaryButton(L10n.t("error.retry")) { /* retry */ }
+                    SecondaryButton(L10n.t("error.openN8n")) { /* open */ }
                 }
             }
             .padding(.leading, 116)
@@ -550,7 +550,7 @@ struct FinishedView: View {
                     .truncationMode(.tail)
                 HStack(spacing: 8) {
                     #if !APPSTORE
-                    PrimaryButton("Open terminal") {
+                    PrimaryButton(L10n.t("finished.terminal")) {
                         let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2", "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
                         let activated = terminalBundleIds.compactMap { id in
                             NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
@@ -561,7 +561,7 @@ struct FinishedView: View {
                         NotificationCenter.default.post(name: .islandCollapse, object: nil)
                     }
                     #endif
-                    SecondaryButton("OK") {
+                    SecondaryButton(L10n.t("finished.ok")) {
                         NotificationCenter.default.post(name: .islandCollapse, object: nil)
                     }
                 }
@@ -623,11 +623,11 @@ struct DiffCardView: View {
 
             // Content
             if diff.tooLarge {
-                Text("Diff too large")
+                Text(L10n.t("diff.tooLarge"))
                     .font(.system(size: 10.5))
                     .foregroundColor(Color(hex: "#6B7079"))
             } else if allLines.isEmpty {
-                Text("No changes")
+                Text(L10n.t("diff.none"))
                     .font(.system(size: 10.5))
                     .foregroundColor(Color(hex: "#6B7079"))
             } else {
@@ -717,8 +717,8 @@ struct ConfusedView: View {
         ZStack {
             CardBackground(wash: .pink)
             VStack(alignment: .leading, spacing: 5) {
-                Text("Too many hits at once.").font(.system(size: 15, weight: .semibold))
-                Text("Give me a sec — back to work in three seconds.")
+                Text(L10n.t("confused.title")).font(.system(size: 15, weight: .semibold))
+                Text(L10n.t("confused.sub"))
                     .font(.system(size: 13)).foregroundColor(Color(hex: "#9398A1"))
             }
             .padding(.leading, 128)
@@ -759,7 +759,7 @@ struct UploadView: View {
                     center: .bottom, startRadius: 0, endRadius: 200
                 ))
             VStack(alignment: .leading, spacing: 8) {
-                Text("Drop your files here")
+                Text(L10n.t("upload.drop"))
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(state.fileDragOver ? Color(hex: "#34D399") : Color(hex: "#D5D7DB"))
                 HStack(spacing: 6) {
@@ -870,12 +870,12 @@ struct UploadingView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 12))
                             .foregroundColor(Color(hex: "#34D399"))
-                        Text("  \(state.droppedFile?.name ?? "File")")
+                        Text("  \(state.droppedFile?.name ?? L10n.t("upload.fileCap"))")
                             .font(.system(size: 12.5, weight: .semibold))
                             .foregroundColor(Color(hex: "#34D399"))
                             .lineLimit(1).truncationMode(.middle)
                     } else {
-                        Text("Uploading \(state.droppedFile?.name ?? "file")")
+                        Text(L10n.t("upload.uploading", ["name": state.droppedFile?.name ?? L10n.t("upload.file")]))
                             .font(.system(size: 12.5))
                             .foregroundColor(Color(hex: "#A9ADB5"))
                             .lineLimit(1).truncationMode(.middle)
@@ -907,11 +907,11 @@ struct ChooseView: View {
             CardBackground(wash: nil)
             VStack(alignment: .leading, spacing: 8) {
                 let fileName = state.droppedFile?.name ?? "file"
-                (Text(fileName).font(.system(size: 14, weight: .semibold)) + Text(" is ready.").font(.system(size: 14, weight: .semibold)))
-                Text("What do you want to do with it?").font(.system(size: 12.5)).foregroundColor(Color(hex: "#9398A1"))
+                (Text(fileName).font(.system(size: 14, weight: .semibold)) + Text(L10n.t("upload.readySuffix")).font(.system(size: 14, weight: .semibold)))
+                Text(L10n.t("upload.what")).font(.system(size: 12.5)).foregroundColor(Color(hex: "#9398A1"))
                 HStack(spacing: 8) {
-                    PrimaryButton("Ask a question") { state.view = .prompt }
-                    SecondaryButton("Send by email") { state.view = .mail }
+                    PrimaryButton(L10n.t("upload.ask")) { state.view = .prompt }
+                    SecondaryButton(L10n.t("upload.email")) { state.view = .mail }
                 }
             }
             .padding(.leading, 98)
@@ -935,9 +935,9 @@ struct MailView: View {
             CardBackground(wash: nil)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text("New email").font(.system(size: 12, weight: .semibold))
+                    Text(L10n.t("mail.new")).font(.system(size: 12, weight: .semibold))
                     if let name = state.droppedFile?.name {
-                        Text("with").font(.system(size: 12)).foregroundColor(Color(hex: "#8E939C"))
+                        Text(L10n.t("mail.with")).font(.system(size: 12)).foregroundColor(Color(hex: "#8E939C"))
                         Text(name).font(.system(size: 12)).foregroundColor(Color(hex: "#8E939C"))
                             .lineLimit(1).truncationMode(.middle)
                     }
@@ -966,7 +966,7 @@ struct MailView: View {
                         guard !isSending else { return }
                         sendMail()
                     }
-                    SecondaryButton("Cancel") { state.view = .choose }
+                    SecondaryButton(L10n.t("common.cancel")) { state.view = .choose }
                 }
             }
             .padding(.leading, 92)
@@ -1347,7 +1347,7 @@ struct ModelPickerView: View {
         if state.loadingProviderModels.contains(state.chatProvider) {
             HStack(spacing: 8) {
                 ProgressView().scaleEffect(0.7)
-                Text("Loading models…")
+                Text(L10n.t("chat.loadingModels"))
                     .font(.system(size: 12))
                     .foregroundColor(Color(hex: "#8A8F98"))
             }
@@ -1512,17 +1512,17 @@ struct ResultView: View {
                         // The URL comes from the model, which may have read attacker-controlled
                         // files or pages: only plain web links may leave the app.
                         let openURL = safeWebURL(result.items.first?.url)
-                        PrimaryButton("Open") {
+                        PrimaryButton(L10n.t("common.open")) {
                             if let openURL { NSWorkspace.shared.open(openURL) }
                         }
                         .disabled(openURL == nil)
                         .help(openURL?.absoluteString ?? "")
-                        SecondaryButton("Copy") {
+                        SecondaryButton(L10n.t("common.copy")) {
                             let text = result.items.map { "\($0.label): \($0.detail)" }.joined(separator: "\n")
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(text, forType: .string)
                         }
-                        SecondaryButton("Close") { state.view = state.tasks.isEmpty ? .empty : .overview }
+                        SecondaryButton(L10n.t("common.close")) { state.view = state.tasks.isEmpty ? .empty : .overview }
                     }
                 }
                 .padding(.leading, 84)
@@ -1704,12 +1704,12 @@ struct IntegrationCardView: View {
     private var statusLabel: String {
         #if !APPSTORE
         if task.id == "integration_music" {
-            if appState.musicAutomationDenied { return "Automation not allowed" }
-            if appState.musicPlaying { return "Playing · \(MusicController.shared.trackTitle ?? "Unknown")" }
-            return "Not playing"
+            if appState.musicAutomationDenied { return L10n.t("music.denied") }
+            if appState.musicPlaying { return L10n.t("music.playing", ["title": MusicController.shared.trackTitle ?? L10n.t("music.unknown")]) }
+            return L10n.t("music.notPlaying")
         }
         #endif
-        if PillCatalog.definition(for: task.id)?.comingSoon == true { return "Coming soon" }
+        if PillCatalog.definition(for: task.id)?.comingSoon == true { return L10n.t("int.comingSoon") }
         let svcErr = task.id == "integration_stripe" ? appState.stripeError
                    : task.id == "integration_calcom"  ? appState.calcomError
                    : nil
@@ -1717,12 +1717,12 @@ struct IntegrationCardView: View {
         let isHooks = task.id == "agent_gemini" || task.id == "agent_antigravity"
         let isAI    = ChatProvider(pillID: task.id) != nil
         if isConfigured {
-            if isHooks { return "Hooks installed" }
+            if isHooks { return L10n.t("int.hooksInstalled") }
             if isAI {
                 let provider = ChatProvider(pillID: task.id)!
                 if provider.isLocal {
                     let model = provider == .ollama ? appState.ollamaChatModel : appState.lmstudioChatModel
-                    return "Connected · \(model)"
+                    return L10n.t("int.connectedModel", ["model": model])
                 }
                 let model: String
                 switch task.id {
@@ -1731,16 +1731,16 @@ struct IntegrationCardView: View {
                 case "ai_openai":    model = appState.openAIChatModel
                 default:             model = ""
                 }
-                return "Key configured · \(model)"
+                return L10n.t("int.keyModel", ["model": model])
             }
-            return "Connected · loading…"
+            return L10n.t("int.loading")
         } else {
-            if isHooks { return "Hooks not installed" }
+            if isHooks { return L10n.t("int.hooksMissing") }
             if isAI {
                 let provider = ChatProvider(pillID: task.id)!
-                return provider.isLocal ? "Not connected" : "Key not configured"
+                return provider.isLocal ? L10n.t("int.notConnected") : L10n.t("int.keyMissing")
             }
-            return "Key not configured"
+            return L10n.t("int.keyMissing")
         }
     }
 
@@ -1814,7 +1814,7 @@ struct IntegrationCardView: View {
                         .foregroundColor(Color(hex: "#F5F6F8"))
                         .lineLimit(1).truncationMode(.tail)
                         .layoutPriority(1)
-                    Text(PillCatalog.definition(for: task.id)?.sessionSubtitle ?? "Agent")
+                    Text(L10n.pillSubtitle(PillCatalog.definition(for: task.id)?.sessionSubtitle ?? "Agent"))
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                         .lineLimit(1).truncationMode(.tail)
@@ -1848,7 +1848,7 @@ struct IntegrationCardView: View {
                     Text(PillCatalog.definition(for: task.id)?.name ?? task.name)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(Color(hex: "#F5F6F8"))
-                    Text(PillCatalog.definition(for: task.id)?.subtitle ?? "Integration")
+                    Text(L10n.pillSubtitle(PillCatalog.definition(for: task.id)?.subtitle ?? "Integration"))
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                     Spacer(minLength: 2)
@@ -1868,7 +1868,7 @@ struct IntegrationCardView: View {
 
                 HStack(spacing: 8) {
                     if task.id == "integration_claude" {
-                        Button("Open Visual Studio Code") { openVSCode() }
+                        Button(L10n.t("int.openVSCode")) { openVSCode() }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: task.color).opacity(0.7))
                             .buttonStyle(.plain)
@@ -1876,7 +1876,7 @@ struct IntegrationCardView: View {
                         #if !APPSTORE
                         if let url = NSWorkspace.shared.urlForApplication(
                             withBundleIdentifier: "com.todesktop.230313mzl4w4u92") {
-                            Button("Open Cursor") {
+                            Button(L10n.t("int.openCursor")) {
                                 NSWorkspace.shared.openApplication(at: url, configuration: .init(),
                                                                    completionHandler: nil)
                             }
@@ -1889,7 +1889,7 @@ struct IntegrationCardView: View {
                         #if !APPSTORE
                         if let url = NSWorkspace.shared.urlForApplication(
                             withBundleIdentifier: "com.openai.codex") {
-                            Button("Open Codex") {
+                            Button(L10n.t("int.openCodex")) {
                                 NSWorkspace.shared.openApplication(at: url, configuration: .init(),
                                                                    completionHandler: nil)
                             }
@@ -1900,7 +1900,7 @@ struct IntegrationCardView: View {
                         #endif
                     } else if let provider = ChatProvider(pillID: task.id) {
                         if isConfigured {
-                            Button("Chat with \(task.name)") {
+                            Button(L10n.t("int.chatWith", ["name": task.name])) {
                                 switchChatProvider(provider)
                             }
                             .font(.system(size: 11, weight: .medium))
@@ -1909,12 +1909,12 @@ struct IntegrationCardView: View {
                         }
                     } else if task.id == "integration_music" {
                         #if !APPSTORE
-                        Button("Open Music") { MusicController.shared.openMusic() }
+                        Button(L10n.t("int.openMusic")) { MusicController.shared.openMusic() }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: task.color).opacity(0.85))
                             .buttonStyle(.plain)
                         if appState.musicAutomationDenied {
-                            Button("Open Settings…") { MusicController.shared.openAutomationSettings() }
+                            Button(L10n.t("music.openSettings")) { MusicController.shared.openAutomationSettings() }
                                 .font(.system(size: 11))
                                 .foregroundColor(Color(hex: "#8E939C"))
                                 .buttonStyle(.plain)
@@ -1944,19 +1944,19 @@ struct IntegrationCardView: View {
                         }
                         .buttonStyle(.plain)
                     } else if let url = openURL {
-                        Button("Open \(task.name)") { NSWorkspace.shared.open(url) }
+                        Button(L10n.t("int.open", ["name": task.name])) { NSWorkspace.shared.open(url) }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: task.color).opacity(0.85))
                             .buttonStyle(.plain)
                     }
                     if task.id == "integration_stripe" && isConfigured {
-                        Button("Refresh") { Task { @MainActor in StripePoller.shared.pollNow() } }
+                        Button(L10n.t("int.refresh")) { Task { @MainActor in StripePoller.shared.pollNow() } }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: "#0570DE").opacity(0.85))
                             .buttonStyle(.plain)
                     }
                     if task.id == "integration_calcom" && isConfigured {
-                        Button("Refresh") { Task { @MainActor in CalcomPoller.shared.pollNow() } }
+                        Button(L10n.t("int.refresh")) { Task { @MainActor in CalcomPoller.shared.pollNow() } }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundColor(Color(hex: "#C9956A").opacity(0.85))
                             .buttonStyle(.plain)
@@ -1966,7 +1966,7 @@ struct IntegrationCardView: View {
                        && task.id != "agent_cursor"
                        && task.id != "agent_codex"
                        && task.id != "integration_music" {
-                        Button("Settings…") {
+                        Button(L10n.t("settings.open")) {
                             let section: String
                             switch PillCatalog.definition(for: task.id)?.category {
                             case .workspace, .agent: section = "agents"
@@ -2034,7 +2034,7 @@ struct VercelDeploymentListView: View {
                 Text("Vercel")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Deployments")
+                Text(L10n.t("int.deployments"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
             }
@@ -2203,7 +2203,7 @@ struct ResendCardView: View {
                 Text("Resend")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Emails")
+                Text(L10n.t("int.emails"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
                 if let total {
@@ -2345,7 +2345,7 @@ struct GitHubPulseCardView: View {
                     }
                     .buttonStyle(.plain)
                 } else {
-                    Text("Overview")
+                    Text(L10n.t("int.overview"))
                         .font(.system(size: 11))
                         .foregroundColor(Color(hex: "#8E939C"))
                 }
@@ -2363,13 +2363,13 @@ struct GitHubPulseCardView: View {
                     if n == 0 { return "0" }
                     let failing = pulse.myPRs.filter { $0.ci == .failure }.count
                     let pending = pulse.myPRs.filter { $0.ci == .pending }.count
-                    if failing > 0 { return "\(n) · \(failing) failing" }
-                    if pending > 0 { return "\(n) · running" }
+                    if failing > 0 { return L10n.t("github.failingCount", ["n": "\(n)", "failing": "\(failing)"]) }
+                    if pending > 0 { return L10n.t("github.runningCount", ["n": "\(n)"]) }
                     return "\(n)"
                 }()
                 GitHubStatRow(
                     icon: "arrow.triangle.pull", iconColor: ciColor(prWorst),
-                    label: "My PRs", value: prValue
+                    label: L10n.t("github.myPRs"), value: prValue
                 ) { onTapSection(.myPRs) }
 
                 // To review
@@ -2377,7 +2377,7 @@ struct GitHubPulseCardView: View {
                 GitHubStatRow(
                     icon: "eye",
                     iconColor: reviewCount > 0 ? "#8AB4F8" : "#6B7079",
-                    label: "To review",
+                    label: L10n.t("github.toReview"),
                     value: "\(reviewCount)"
                 ) { onTapSection(.toReview) }
 
@@ -2387,9 +2387,9 @@ struct GitHubPulseCardView: View {
                     switch mainWorst {
                     case .failure:
                         let n = pulse.mainCI.filter { $0.ci == .failure }.count
-                        return ("xmark.octagon.fill", "#F4505E", "\(n) failing")
+                        return ("xmark.octagon.fill", "#F4505E", L10n.t("github.failing", ["n": "\(n)"]))
                     case .pending:
-                        return ("checkmark.seal.fill", "#F5A524", "running")
+                        return ("checkmark.seal.fill", "#F5A524", L10n.t("github.running"))
                     case .success:
                         return ("checkmark.seal.fill", "#22C55E", "all green")
                     case .unknown:
@@ -2398,7 +2398,7 @@ struct GitHubPulseCardView: View {
                 }()
                 GitHubStatRow(
                     icon: ciIcon, iconColor: ciIconColor,
-                    label: "Default branch CI", value: ciValue
+                    label: L10n.t("github.defaultCI"), value: ciValue
                 ) { onTapSection(.mainCI) }
             }
             .padding(.top, 6)
@@ -2456,10 +2456,10 @@ struct GitHubDetailView: View {
 
     private var title: String {
         switch section {
-        case .myPRs:    return "My PRs"
-        case .toReview: return "To review"
-        case .mainCI:   return "Default branch CI"
-        case .activity: return "Activity"
+        case .myPRs:    return L10n.t("github.myPRs")
+        case .toReview: return L10n.t("github.toReview")
+        case .mainCI:   return L10n.t("github.defaultCI")
+        case .activity: return L10n.t("github.activity")
         }
     }
 
@@ -2505,7 +2505,7 @@ struct GitHubDetailView: View {
 
                 // List
                 if items.isEmpty && repoItems.isEmpty {
-                    Text("Nothing here")
+                    Text(L10n.t("github.nothing"))
                         .font(.system(size: 10.5))
                         .foregroundColor(Color(hex: "#6B7079"))
                         .padding(.top, 8)
@@ -2571,16 +2571,16 @@ private struct GitHubActivityDetailContent: View {
         if let day = hoveredDay {
             let label: String
             switch day.count {
-            case 0:  label = "No contributions"
-            case 1:  label = "1 contribution"
-            default: label = "\(day.count) contributions"
+            case 0:  label = L10n.t("github.none")
+            case 1:  label = L10n.t("github.one")
+            default: label = L10n.t("github.many", ["count": "\(day.count)"])
             }
             return "\(activityDateLabel(day.date)) · \(label)"
         }
         guard let act = activity else { return "" }
         let total = activityTotalLabel(act.total)
-        if let s = stats { return "\(total) past year · \(s.totalRepos) repos" }
-        return "\(total) past year"
+        if let s = stats { return L10n.t("github.pastYearRepos", ["total": total, "repos": "\(s.totalRepos)"]) }
+        return L10n.t("github.pastYear", ["total": total])
     }
 
     var body: some View {
@@ -2591,7 +2591,7 @@ private struct GitHubActivityDetailContent: View {
                     HStack(spacing: 3) {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 8, weight: .medium))
-                        Text("Activity")
+                        Text(L10n.t("github.activity"))
                             .font(.system(size: 12, weight: .semibold))
                     }
                     .foregroundColor(Color(hex: "#F5F6F8"))
@@ -2643,7 +2643,7 @@ private struct GitHubActivityDetailContent: View {
                 .padding(.leading, 108)
                 .padding(.trailing, 12)
             } else {
-                Text("Loading…")
+                Text(L10n.t("common.loading"))
                     .font(.system(size: 10.5))
                     .foregroundColor(Color(hex: "#6B7079"))
                     .padding(.top, 8)
@@ -2661,15 +2661,19 @@ private struct GitHubActivityDetailContent: View {
         let parts = dateStr.split(separator: "-")
         guard parts.count == 3,
               let month = Int(parts[1]), month >= 1 && month <= 12,
-              let day   = Int(parts[2]) else { return dateStr }
-        let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-        return "\(months[month - 1]) \(day)"
+              let day   = Int(parts[2]),
+              let date = Calendar(identifier: .gregorian).date(from: DateComponents(year: 2000, month: month, day: day))
+        else { return dateStr }
+        let fmt = DateFormatter()
+        fmt.locale = L10n.locale
+        fmt.setLocalizedDateFormatFromTemplate("MMMd")
+        return fmt.string(from: date)
     }
 
     private func activityTotalLabel(_ n: Int) -> String {
         let nf = NumberFormatter()
         nf.numberStyle = .decimal
-        nf.locale = Locale(identifier: "en_US")
+        nf.locale = .current
         return nf.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 }
@@ -2722,7 +2726,7 @@ private struct GitHubPRRowView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if pr.isDraft {
-                    Text("Draft")
+                    Text(L10n.t("github.draft"))
                         .font(.system(size: 9.5))
                         .foregroundColor(Color(hex: "#6B7079"))
                 }
@@ -2739,9 +2743,9 @@ private struct GitHubRepoCIRowView: View {
 
     private var ciStateWord: String? {
         switch repo.ci {
-        case .failure: return "failing"
-        case .pending: return "running"
-        case .success: return "passing"
+        case .failure: return L10n.t("github.failingWord")
+        case .pending: return L10n.t("github.running")
+        case .success: return L10n.t("github.passing")
         case .unknown: return nil
         }
     }
@@ -2797,7 +2801,7 @@ struct GitHubStatsCardView: View {
                 Text("GitHub")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Overview")
+                Text(L10n.t("int.overview"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
             }
@@ -2808,9 +2812,9 @@ struct GitHubStatsCardView: View {
             // Stats rows
             VStack(alignment: .leading, spacing: 5) {
                 StatRow(icon: "star.fill", color: "#F5A524",
-                        label: "Total stars", value: formatCount(stats.totalStars))
+                        label: L10n.t("int.stars"), value: formatCount(stats.totalStars))
                 StatRow(icon: "square.stack.fill", color: "#6B7079",
-                        label: "Repositories", value: "\(stats.totalRepos)")
+                        label: L10n.t("int.repos"), value: "\(stats.totalRepos)")
             }
             .padding(.top, 8)
             .padding(.leading, 108)
@@ -2866,7 +2870,7 @@ struct StripeCardView: View {
                 Text("Stripe")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Payments")
+                Text(L10n.t("int.payments"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
             }
@@ -2993,7 +2997,7 @@ struct CalcomCalendarView: View {
     private let cal = Calendar.current
 
     private var navLabel: String {
-        let f = DateFormatter(); f.dateFormat = "MMMM yyyy"
+        let f = DateFormatter(); f.locale = L10n.locale; f.dateFormat = "MMMM yyyy"
         return "\(f.string(from: displayMonth)) Q\(displayHalf)"
     }
 
@@ -3051,7 +3055,7 @@ struct CalcomCalendarView: View {
             HStack(spacing: 6) {
                 Circle().fill(Color(hex: "#C9956A")).frame(width: 7, height: 7)
                 Text("Cal.com").font(.system(size: 12, weight: .semibold)).foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Schedule").font(.system(size: 11)).foregroundColor(Color(hex: "#8E939C"))
+                Text(L10n.t("int.schedule")).font(.system(size: 11)).foregroundColor(Color(hex: "#8E939C"))
             }
             .padding(.top, 6).padding(.leading, 108).padding(.trailing, 36)
 
@@ -3147,7 +3151,7 @@ struct CalcomDayView: View {
             .padding(.top, 6).padding(.trailing, 12)
 
             if bookings.isEmpty {
-                Text("No calls scheduled").font(.system(size: 11)).foregroundColor(Color(hex: "#6B7079"))
+                Text(L10n.t("int.noCalls")).font(.system(size: 11)).foregroundColor(Color(hex: "#6B7079"))
                     .padding(.leading, 116).padding(.top, 8)
             } else {
                 VStack(alignment: .leading, spacing: 3) {
@@ -3177,7 +3181,7 @@ struct CalcomDayView: View {
         .transition(.opacity)
     }
     private var dayLabel: String {
-        let f = DateFormatter(); f.dateFormat = "EEEE d MMMM"; return f.string(from: date)
+        let f = DateFormatter(); f.locale = L10n.locale; f.dateFormat = "EEEE d MMMM"; return f.string(from: date)
     }
 }
 
@@ -3244,7 +3248,7 @@ struct NotionCardView: View {
             HStack(spacing: 6) {
                 Circle().fill(Color(hex: "#E8E8E8")).frame(width: 7, height: 7)
                 Text("Notion").font(.system(size: 12, weight: .semibold)).foregroundColor(Color(hex: "#F5F6F8"))
-                Text("Recent").font(.system(size: 11)).foregroundColor(Color(hex: "#8E939C"))
+                Text(L10n.t("int.recent")).font(.system(size: 11)).foregroundColor(Color(hex: "#8E939C"))
             }
             .padding(.top, 6).padding(.leading, 108).padding(.trailing, 36)
 
@@ -3288,7 +3292,7 @@ struct N8nDetailView: View {
 
     private var success: Bool  { task.state == .finished }
     private var accent: Color  { success ? Color(hex: "#22C55E") : Color(hex: "#F4505E") }
-    private var statusLabel: String { success ? "Success" : "Failed" }
+    private var statusLabel: String { success ? L10n.t("int.success") : L10n.t("int.failed") }
     private var detail: String? { task.steps.dropFirst().first }
 
     var body: some View {
@@ -3335,7 +3339,7 @@ struct N8nDetailView: View {
                 }
                 .frame(maxHeight: 88)
             } else {
-                Text(success ? "Completed successfully." : "No error details available.")
+                Text(success ? L10n.t("int.completed") : L10n.t("int.noError"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#6B7079"))
             }
@@ -3831,13 +3835,13 @@ struct MusicCardView: View {
                 .padding(.leading, 108)
                 .padding(.trailing, 36)
 
-                Text("Allow Coucou to control Music")
+                Text(L10n.t("music.allow"))
                     .font(.system(size: 11))
                     .foregroundColor(Color(hex: "#8E939C"))
                     .padding(.leading, 108)
                     .padding(.trailing, 12)
 
-                Button("Open Settings…") { MusicController.shared.openAutomationSettings() }
+                Button(L10n.t("music.openSettings")) { MusicController.shared.openAutomationSettings() }
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(Color(hex: "#FA2D48").opacity(0.85))
                     .buttonStyle(.plain)
@@ -3991,7 +3995,7 @@ struct WardrobeView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header
             HStack(spacing: 6) {
-                Text("Wardrobe")
+                Text(L10n.t("wardrobe.title"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(Color(hex: "#F5F6F8"))
                 Spacer(minLength: 4)
@@ -4560,7 +4564,7 @@ struct SettingsIslandView: View {
                         .labelsHidden()
                         .scaleEffect(0.75)
                         .frame(width: 44)
-                    Text("Sound")
+                    Text(L10n.t("settings.sound"))
                         .font(.system(size: 12.5))
                         .foregroundColor(Color(hex: "#C5C8CD"))
                     Slider(value: $state.soundVolume, in: 0...0.2)
@@ -4574,7 +4578,7 @@ struct SettingsIslandView: View {
                         .font(.system(size: 12))
                         .foregroundColor(Color(hex: "#8E939C"))
                         .frame(width: 16)
-                    Text("Auto-close · \(Int(state.autoCloseInterval))s")
+                    Text(L10n.t("settings.autoClose", ["seconds": "\(Int(state.autoCloseInterval))"]))
                         .font(.system(size: 12))
                         .foregroundColor(Color(hex: "#C5C8CD"))
                     Spacer()
@@ -4598,7 +4602,7 @@ struct SettingsIslandView: View {
                     StatusBadge(label: "Claude Code", ok: claudeConnected)
                     StatusBadge(label: "API", ok: apiConnected)
                     Spacer()
-                    Button("Settings…") {
+                    Button(L10n.t("settings.open")) {
                         NotificationCenter.default.post(name: .openFullSettings, object: nil)
                     }
                     .font(.system(size: 11.5))

@@ -1896,6 +1896,12 @@ def normalize_event(name):
         'BeforeAgent': 'UserPromptSubmit', 'AfterAgent': 'Stop',
         'startup': 'SessionStart', 'exit': 'SessionEnd',
         'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
+        'sessionStart': 'SessionStart', 'sessionEnd': 'SessionEnd',
+        'beforeSubmitPrompt': 'UserPromptSubmit',
+        'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
+        'postToolUseFailure': 'PostToolUseFailure',
+        'subagentStart': 'SubagentStart', 'subagentStop': 'SubagentStop',
+        'stop': 'Stop',
     }
     return mapping.get(name, name)
 
@@ -2163,6 +2169,12 @@ def normalize_event(name):
         'BeforeAgent': 'UserPromptSubmit', 'AfterAgent': 'Stop',
         'startup': 'SessionStart', 'exit': 'SessionEnd',
         'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
+        'sessionStart': 'SessionStart', 'sessionEnd': 'SessionEnd',
+        'beforeSubmitPrompt': 'UserPromptSubmit',
+        'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
+        'postToolUseFailure': 'PostToolUseFailure',
+        'subagentStart': 'SubagentStart', 'subagentStop': 'SubagentStop',
+        'stop': 'Stop',
     }
     return mapping.get(name, name)
 

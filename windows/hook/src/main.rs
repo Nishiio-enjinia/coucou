@@ -29,7 +29,16 @@ const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
 /// Fields that are pointless to forward and can be enormous (a whole file read,
 /// a full command output). The island never shows them.
-const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
+const DROPPED_FIELDS: &[&str] = &[
+    "tool_response",
+    "tool_output",
+    "transcript_path",
+    "content",
+    "attachments",
+    "edits",
+    "output",
+    "result_json",
+];
 /// Longest string forwarded for any single field; the island truncates to far
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
@@ -120,28 +129,60 @@ fn read_event() -> Option<(String, String)> {
     if !agent.is_empty() {
         map.insert("coucou_agent".into(), serde_json::Value::String(agent));
     }
-    let event = map
+    let raw_event = map
         .get("hook_event_name")
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or(arg_event);
-    map.insert("hook_event_name".into(), serde_json::Value::String(event.clone()));
+    let mut event = canonical_event(&raw_event);
+    if (raw_event == "stop" || raw_event == "Stop")
+        && map.get("status").and_then(|v| v.as_str()) == Some("error")
+    {
+        event = "StopFailure".into();
+    }
+    map.insert(
+        "hook_event_name".into(),
+        serde_json::Value::String(event.clone()),
+    );
+
+    if map
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::is_empty)
+        .unwrap_or(true)
+    {
+        for key in ["conversation_id", "conversationId", "sessionId"] {
+            if let Some(value) = map.get(key).and_then(|v| v.as_str()) {
+                if !value.is_empty() {
+                    map.insert(
+                        "session_id".into(),
+                        serde_json::Value::String(value.to_string()),
+                    );
+                    break;
+                }
+            }
+        }
+    }
 
     for field in DROPPED_FIELDS {
         map.remove(*field);
     }
 
-    let cwd_missing = map
-        .get("cwd")
-        .and_then(|v| v.as_str())
-        .map(str::is_empty)
-        .unwrap_or(true);
-    if cwd_missing {
-        if let Ok(cwd) = std::env::current_dir() {
+    let workspace = first_string_list(map, "workspace_roots")
+        .or_else(|| first_string_list(map, "workspacePaths"));
+    let cwd = map.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let cwd_norm = cwd.replace('\\', "/");
+    let cwd_is_hooks_home = cwd_norm.ends_with("/.cursor") || cwd_norm.ends_with("/.cursor/");
+    if let Some(root) = workspace {
+        if cwd.is_empty() || cwd_is_hooks_home {
+            map.insert("cwd".into(), serde_json::Value::String(root));
+        }
+    } else if cwd.is_empty() {
+        if let Ok(dir) = std::env::current_dir() {
             map.insert(
                 "cwd".into(),
-                serde_json::Value::String(cwd.to_string_lossy().to_string()),
+                serde_json::Value::String(dir.to_string_lossy().to_string()),
             );
         }
     }
@@ -166,6 +207,34 @@ fn read_event() -> Option<(String, String)> {
     let mut line = payload.to_string();
     line.push('\n');
     Some((line, event))
+}
+
+/// Cursor, Gemini and Antigravity spell events differently. Claude's names pass through.
+fn canonical_event(name: &str) -> String {
+    match name {
+        "sessionStart" | "startup" => "SessionStart",
+        "sessionEnd" | "exit" => "SessionEnd",
+        "beforeSubmitPrompt" | "BeforeAgent" | "PreInvocation" => "UserPromptSubmit",
+        "preToolUse" | "BeforeTool" | "BeforeToolSelection" => "PreToolUse",
+        "postToolUse" | "AfterTool" | "PostInvocation" => "PostToolUse",
+        "postToolUseFailure" => "PostToolUseFailure",
+        "subagentStart" => "SubagentStart",
+        "subagentStop" => "SubagentStop",
+        "stop" | "AfterAgent" => "Stop",
+        other => other,
+    }
+    .to_string()
+}
+
+fn first_string_list(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    map.get(key).and_then(|v| v.as_array()).and_then(|items| {
+        items.iter().find_map(|item| {
+            item.as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+    })
 }
 
 /// Caps every string in the payload. A single Write can carry a whole file.
