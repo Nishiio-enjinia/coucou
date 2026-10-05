@@ -22,7 +22,8 @@ export type IslandViewName =
   | "note"
   | "settings"
   | "greeting"
-  | "gitlab";
+  | "gitlab"
+  | "azuredevops";
 
 export type BotStateName =
   | "idle"
@@ -87,9 +88,15 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
-  // Fills the 720×320 panel so the GitLab browser can use the whole window.
+  // Fills the 720×320 panel so a repository browser can use the whole window.
   gitlab: { height: 308, botX: 0, botY: 0, botDiameter: 0, agentMode: "none" },
+  azuredevops: { height: 308, botX: 0, botY: 0, botDiameter: 0, agentMode: "none" },
 };
+
+/** GitLab and Azure DevOps take the whole panel. */
+export function isWideBrowse(view: IslandViewName): boolean {
+  return view === "gitlab" || view === "azuredevops";
+}
 
 // The upload views above are only the fallback geometry. Once a file is actually
 // dropped the whole sequence — Mochi included — is drawn by src/upload, which
@@ -114,7 +121,7 @@ export function islandSize(
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
       const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
-      const w = view === "gitlab" ? PANEL_W : EXPANDED_W;
+      const w = isWideBrowse(view) ? PANEL_W : EXPANDED_W;
       return { w, h };
     }
   }

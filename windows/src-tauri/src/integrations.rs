@@ -71,6 +71,7 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_gitlab", 8, 60, poll_gitlab);
+    spawn(app.clone(), "integration_azuredevops", 10, 60, poll_azuredevops);
     spawn(app.clone(), "integration_jenkins", 4, 15, poll_jenkins);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app, "integration_notion", 9, 300, poll_notion);
@@ -114,6 +115,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_stripe" => poll_stripe(app).await,
         "integration_github" => poll_github(app).await,
         "integration_gitlab" => poll_gitlab(app).await,
+        "integration_azuredevops" => poll_azuredevops(app).await,
         "integration_jenkins" => poll_jenkins(app).await,
         "integration_vercel" => poll_vercel(app).await,
         "integration_n8n" => poll_n8n(app).await,
@@ -1019,6 +1021,970 @@ fn map_gitlab_job(v: &Value, base: &str) -> Option<Value> {
         "status": pipeline_status(json_str(v, "status")),
         "url": web,
     }))
+}
+
+// ── Azure DevOps ──────────────────────────────────────────────────────────────
+//
+// One organization, whichever URL the user stored (`https://dev.azure.com/org`
+// or `https://org.visualstudio.com`). Every minute Coucou reads the latest
+// pipelines, open bugs and commits from the projects touched most recently.
+// The browser can open any project. The token stays in the credential store
+// and is only sent to that organization.
+
+const ADO_PAGE: u32 = 40;
+const ADO_POLL_PROJECTS: usize = 6;
+const ADO_POLL_COMMIT_PROJECTS: usize = 3;
+const ADO_POLL_REPOS: usize = 2;
+
+const ADO_BUGS_WIQL: &str = "SELECT [System.Id] FROM WorkItems WHERE [System.WorkItemType] = 'Bug' AND [System.State] <> 'Closed' AND [System.State] <> 'Removed' ORDER BY [System.ChangedDate] DESC";
+const ADO_BUGS_RECENT_WIQL: &str = "SELECT [System.Id] FROM WorkItems WHERE [System.WorkItemType] = 'Bug' AND [System.State] <> 'Closed' AND [System.State] <> 'Removed' AND [System.ChangedDate] >= @Today - 14 ORDER BY [System.ChangedDate] DESC";
+
+#[derive(Clone)]
+struct AdoHit {
+    seen: String,
+    kind: &'static str,
+    title: String,
+    project: String,
+    author: String,
+    reference: String,
+    status: String,
+    iid: Option<i64>,
+    created_at: String,
+    failure: bool,
+    url: Option<String>,
+}
+
+fn ado_error(app: &AppHandle, error: String) {
+    emit(app, IntegrationUpdate {
+        id: "integration_azuredevops",
+        data: json!({}),
+        error: Some(error),
+        event: None,
+    });
+}
+
+fn ado_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
+fn ado_auth(pat: &str) -> String {
+    format!("Basic {}", crate::claude::base64_for(format!(":{pat}").as_bytes()))
+}
+
+fn ado_safe_org(org: &str) -> bool {
+    let bytes = org.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'-')
+        && bytes[0] != b'-'
+        && *bytes.last().unwrap_or(&b'-') != b'-'
+}
+
+fn ado_safe_server_path(path: &str) -> bool {
+    !path.contains("..")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.'))
+}
+
+/// Organization root. A pasted project or build URL is cut back to the org.
+fn ado_base(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Organization URL missing".into());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|_| "Organization URL is not a URL".to_string())?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err("Organization URL must start with http:// or https://".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Put the token in the token field, not in the URL".into());
+    }
+    let host = url.host_str().ok_or("Organization URL has no host")?;
+    let host_l = host.to_ascii_lowercase();
+    if host_l == "dev.azure.com" {
+        let org = url
+            .path()
+            .split('/')
+            .find(|segment| !segment.is_empty())
+            .ok_or("Organization name missing")?;
+        if !ado_safe_org(org) {
+            return Err("Organization name is not valid".into());
+        }
+        return Ok(format!("https://dev.azure.com/{org}"));
+    }
+    if let Some(org) = host_l.strip_suffix(".visualstudio.com") {
+        if !ado_safe_org(org) {
+            return Err("Organization name is not valid".into());
+        }
+        return Ok(format!("https://{host_l}"));
+    }
+    if url.path().contains("..") || !ado_safe_server_path(url.path()) {
+        return Err("Organization URL is not valid".into());
+    }
+    let mut path = url.path().trim_end_matches('/').to_string();
+    let cut = ["/_apis", "/_git", "/_build", "/_workitems"]
+        .iter()
+        .filter_map(|needle| path.find(needle))
+        .min();
+    if let Some(index) = cut {
+        path.truncate(index);
+        path = path.trim_end_matches('/').to_string();
+    }
+    let mut base = url.origin().ascii_serialization();
+    if !path.is_empty() && path != "/" {
+        base.push_str(&path);
+    }
+    Ok(base)
+}
+
+fn ado_guid(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    if bytes.len() != 36 {
+        return false;
+    }
+    bytes.iter().enumerate().all(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            *byte == b'-'
+        } else {
+            byte.is_ascii_hexdigit()
+        }
+    })
+}
+
+fn ado_guid_id(id: Option<String>) -> Result<String, String> {
+    match id {
+        Some(id) if ado_guid(&id) => Ok(id),
+        _ => Err("Missing Azure DevOps id".into()),
+    }
+}
+
+fn ado_continuation(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() > 512 {
+        return None;
+    }
+    raw.bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'='))
+        .then_some(raw)
+}
+
+fn ado_skip(raw: &str) -> Result<u32, String> {
+    if raw.len() > 4 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("Bad page token".into());
+    }
+    raw.parse::<u32>().map_err(|_| "Bad page token".to_string()).and_then(|n| {
+        if n <= 2000 {
+            Ok(n)
+        } else {
+            Err("Bad page token".into())
+        }
+    })
+}
+
+fn ado_encode_segment(raw: &str) -> Option<String> {
+    if raw.is_empty() || raw.contains("..") || raw.contains('/') || raw.contains('\\') || raw.chars().any(|c| c.is_control()) {
+        return None;
+    }
+    let mut out = String::new();
+    for byte in raw.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    Some(out)
+}
+
+fn ado_run_status(status: &str, result: &str) -> &'static str {
+    match result {
+        "succeeded" => "success",
+        "succeededWithIssues" | "partiallySucceeded" => "partial",
+        "failed" => "failed",
+        "canceled" => "canceled",
+        "skipped" => "skipped",
+        "" | "none" => match status {
+            "inProgress" => "running",
+            "notStarted" | "postponed" | "pending" => "pending",
+            "cancelling" => "canceling",
+            _ => "other",
+        },
+        _ => "other",
+    }
+}
+
+fn ado_is_failure(status: &str) -> bool {
+    matches!(status, "failed" | "partial")
+}
+
+fn ado_branch(raw: &str) -> String {
+    let raw = raw.trim();
+    let short = raw
+        .strip_prefix("refs/heads/")
+        .or_else(|| raw.strip_prefix("refs/tags/"))
+        .unwrap_or(raw);
+    plain(short, 160)
+}
+
+fn ado_when(v: &Value, keys: &[&str]) -> String {
+    for key in keys {
+        let value = json_str(v, key);
+        if !value.is_empty() {
+            return plain(value, 40);
+        }
+    }
+    String::new()
+}
+
+fn ado_who(v: Option<&Value>) -> String {
+    let Some(v) = v else { return String::new() };
+    if let Some(name) = v.as_str() {
+        return plain(name, 200);
+    }
+    plain(v.get("displayName").and_then(Value::as_str).unwrap_or(""), 200)
+}
+
+fn ado_subject(comment: &str) -> String {
+    plain(comment.lines().next().unwrap_or("").trim(), 500)
+}
+
+fn ado_link(base: &str, url: &str) -> Option<String> {
+    hosted_url(base, url)
+}
+
+fn ado_project_url(base: &str, name: &str) -> Option<String> {
+    Some(format!("{base}/{}", ado_encode_segment(name)?))
+}
+
+fn ado_build_url(base: &str, project: &str, id: i64, v: &Value) -> Option<String> {
+    let web = v
+        .pointer("/_links/web/href")
+        .and_then(Value::as_str)
+        .and_then(|url| ado_link(base, url));
+    if web.is_some() {
+        return web;
+    }
+    Some(format!("{base}/{}/_build/results?buildId={id}", ado_encode_segment(project)?))
+}
+
+fn ado_commit_url(base: &str, project: &str, repo: &str, sha: &str, remote: &str) -> Option<String> {
+    if let Some(url) = ado_link(base, remote) {
+        return Some(url);
+    }
+    if !safe_sha(sha) {
+        return None;
+    }
+    Some(format!(
+        "{base}/{}/_git/{}/commit/{sha}",
+        ado_encode_segment(project)?,
+        ado_encode_segment(repo)?
+    ))
+}
+
+fn ado_bug_url(base: &str, project: &str, id: i64, v: &Value) -> Option<String> {
+    let web = v
+        .pointer("/_links/html/href")
+        .and_then(Value::as_str)
+        .and_then(|url| ado_link(base, url));
+    if web.is_some() {
+        return web;
+    }
+    Some(format!("{base}/{}/_workitems/edit/{id}", ado_encode_segment(project)?))
+}
+
+fn ado_bug_failure(state: &str) -> bool {
+    !matches!(state, "Resolved" | "Closed" | "Removed" | "Done")
+}
+
+fn ado_weight(item: &AdoHit) -> u8 {
+    if item.status == "running" {
+        0
+    } else if item.failure {
+        1
+    } else {
+        2
+    }
+}
+
+/// One pipeline, one bug and one commit when each exists, then the rest.
+fn ado_digest(mut pipelines: Vec<AdoHit>, mut bugs: Vec<AdoHit>, mut commits: Vec<AdoHit>) -> Vec<AdoHit> {
+    let by_time = |a: &AdoHit, b: &AdoHit| b.created_at.cmp(&a.created_at);
+    pipelines.sort_by(|a, b| ado_weight(a).cmp(&ado_weight(b)).then(by_time(a, b)));
+    bugs.sort_by(by_time);
+    commits.sort_by(by_time);
+    let mut head = Vec::new();
+    if let Some(item) = pipelines.first() {
+        head.push(item.clone());
+    }
+    if let Some(item) = bugs.first() {
+        head.push(item.clone());
+    }
+    if let Some(item) = commits.first() {
+        head.push(item.clone());
+    }
+    head.extend(pipelines.into_iter().skip(1));
+    head.extend(bugs.into_iter().skip(1).take(1));
+    head.extend(commits.into_iter().skip(1).take(1));
+    head.truncate(6);
+    head
+}
+
+fn ado_choose<'a>(
+    failed: Option<&'a AdoHit>,
+    pipeline: Option<&'a AdoHit>,
+    bug: Option<&'a AdoHit>,
+    commit: Option<&'a AdoHit>,
+    fail_new: bool,
+    bug_new: bool,
+    pipe_new: bool,
+    commit_new: bool,
+) -> Option<&'a AdoHit> {
+    if fail_new {
+        return failed;
+    }
+    if bug_new {
+        return bug;
+    }
+    if pipe_new {
+        return pipeline;
+    }
+    if commit_new {
+        return commit;
+    }
+    None
+}
+
+/// True when `sig` changed since the previous poll. An empty feed is remembered
+/// as "none", so the first real item after a quiet poll still rings.
+fn ado_fresh(key: &'static str, sig: Option<&str>) -> bool {
+    is_new(key, sig.unwrap_or("none")) && sig.is_some()
+}
+
+fn ado_hit_json(item: &AdoHit) -> Value {
+    json!({
+        "id": item.seen,
+        "kind": item.kind,
+        "title": item.title,
+        "project": item.project,
+        "author": item.author,
+        "ref": item.reference,
+        "status": item.status,
+        "iid": item.iid,
+        "createdAt": item.created_at,
+        "url": item.url,
+        "failure": item.failure,
+    })
+}
+
+fn ado_alert(item: &AdoHit) -> (String, Option<String>) {
+    let label = if item.author.is_empty() {
+        item.project.clone()
+    } else {
+        format!("{} · {}", item.author, item.project)
+    };
+    let detail = if item.title.is_empty() { None } else { Some(item.title.clone()) };
+    (label, detail)
+}
+
+struct AdoProject {
+    id: String,
+    name: String,
+    updated: String,
+}
+
+fn map_ado_project_ref(v: &Value) -> Option<AdoProject> {
+    let id = json_str(v, "id");
+    if !ado_guid(id) {
+        return None;
+    }
+    let name = plain(json_str(v, "name"), 120);
+    if name.is_empty() {
+        return None;
+    }
+    Some(AdoProject {
+        id: id.to_string(),
+        name,
+        updated: plain(json_str(v, "lastUpdateTime"), 40),
+    })
+}
+
+fn map_ado_project(v: &Value, base: &str) -> Option<Value> {
+    let project = map_ado_project_ref(v)?;
+    Some(json!({
+        "id": project.id,
+        "name": project.name,
+        "description": plain(json_str(v, "description"), 240),
+        "updatedAt": project.updated,
+        "url": ado_project_url(base, &project.name),
+    }))
+}
+
+fn map_ado_repo(v: &Value, base: &str) -> Option<Value> {
+    let id = json_str(v, "id");
+    if !ado_guid(id) {
+        return None;
+    }
+    let name = plain(json_str(v, "name"), 160);
+    if name.is_empty() {
+        return None;
+    }
+    let web = v.get("webUrl").and_then(Value::as_str).and_then(|url| ado_link(base, url));
+    Some(json!({
+        "id": id,
+        "name": name,
+        "branch": ado_branch(json_str(v, "defaultBranch")),
+        "url": web,
+    }))
+}
+
+fn map_ado_build(v: &Value, base: &str, project: &str) -> Option<AdoHit> {
+    let id = json_i64(v.get("id")).filter(|id| *id > 0)?;
+    let status = ado_run_status(json_str(v, "status"), json_str(v, "result"));
+    let name = plain(v.get("definition").and_then(|d| d.get("name")).and_then(Value::as_str).unwrap_or(""), 160);
+    Some(AdoHit {
+        seen: format!("{id}:{status}"),
+        kind: "pipeline",
+        title: if name.is_empty() { plain(json_str(v, "buildNumber"), 80) } else { name },
+        project: plain(project, 120),
+        author: ado_who(v.get("requestedFor")),
+        reference: ado_branch(json_str(v, "sourceBranch")),
+        status: status.to_string(),
+        iid: Some(id),
+        created_at: ado_when(v, &["queueTime", "startTime", "finishTime"]),
+        failure: ado_is_failure(status),
+        url: ado_build_url(base, project, id, v),
+    })
+}
+
+fn map_ado_build_row(v: &Value, base: &str, project: &str) -> Option<Value> {
+    let hit = map_ado_build(v, base, project)?;
+    let sha = json_str(v, "sourceVersion");
+    let short = if safe_sha(sha) { sha[..8].to_string() } else { String::new() };
+    Some(json!({
+        "id": hit.iid,
+        "name": hit.title,
+        "status": hit.status,
+        "ref": hit.reference,
+        "sha": short,
+        "number": plain(json_str(v, "buildNumber"), 80),
+        "author": hit.author,
+        "createdAt": hit.created_at,
+        "url": hit.url,
+    }))
+}
+
+fn map_ado_commit(v: &Value, base: &str, project: &str, repo: &str) -> Option<Value> {
+    let sha = json_str(v, "commitId");
+    if !safe_sha(sha) {
+        return None;
+    }
+    let comment = plain(json_str(v, "comment"), 8000);
+    let title = ado_subject(&comment);
+    let author = v.get("author");
+    let remote = v.get("remoteUrl").and_then(Value::as_str).unwrap_or("");
+    Some(json!({
+        "sha": sha,
+        "shortId": &sha[..8],
+        "title": if title.is_empty() { sha[..8].to_string() } else { title },
+        "message": comment,
+        "author": ado_who(author.and_then(|a| a.get("name")).or(author)),
+        "email": plain_email(author.and_then(|a| a.get("email")).and_then(Value::as_str).unwrap_or("")),
+        "createdAt": plain(author.and_then(|a| a.get("date")).and_then(Value::as_str).unwrap_or(""), 40),
+        "url": ado_commit_url(base, project, repo, sha, remote),
+    }))
+}
+
+fn map_ado_commit_hit(v: &Value, base: &str, project: &str, repo: &str) -> Option<AdoHit> {
+    let row = map_ado_commit(v, base, project, repo)?;
+    let sha = row.get("sha").and_then(Value::as_str)?.to_string();
+    Some(AdoHit {
+        seen: sha,
+        kind: "commit",
+        title: row.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+        project: plain(&format!("{project}/{repo}"), 240),
+        author: row.get("author").and_then(Value::as_str).unwrap_or("").to_string(),
+        reference: row.get("shortId").and_then(Value::as_str).unwrap_or("").to_string(),
+        status: String::new(),
+        iid: None,
+        created_at: row.get("createdAt").and_then(Value::as_str).unwrap_or("").to_string(),
+        failure: false,
+        url: row.get("url").and_then(Value::as_str).map(str::to_string),
+    })
+}
+
+fn map_ado_bug(v: &Value, base: &str) -> Option<AdoHit> {
+    let id = json_i64(v.get("id")).filter(|id| *id > 0)?;
+    let fields = v.get("fields")?;
+    let state = plain(json_str(fields, "System.State"), 40);
+    let project = plain(json_str(fields, "System.TeamProject"), 120);
+    let changed = plain(json_str(fields, "System.ChangedDate"), 40);
+    if changed.is_empty() {
+        return None;
+    }
+    let url = ado_bug_url(base, &project, id, v);
+    Some(AdoHit {
+        seen: format!("{id}:{changed}"),
+        kind: "bug",
+        title: plain(json_str(fields, "System.Title"), 500),
+        project,
+        author: ado_who(fields.get("System.AssignedTo")),
+        reference: String::new(),
+        status: state.clone(),
+        iid: Some(id),
+        created_at: changed,
+        failure: ado_bug_failure(&state),
+        url,
+    })
+}
+
+fn map_ado_bug_row(v: &Value, base: &str) -> Option<Value> {
+    let hit = map_ado_bug(v, base)?;
+    Some(json!({
+        "id": hit.iid,
+        "title": hit.title,
+        "state": hit.status,
+        "author": hit.author,
+        "project": hit.project,
+        "createdAt": hit.created_at,
+        "url": hit.url,
+    }))
+}
+
+fn map_ado_timeline(v: &Value) -> Option<Value> {
+    let name = plain(json_str(v, "name"), 160);
+    if name.is_empty() {
+        return None;
+    }
+    let kind = json_str(v, "type");
+    if !matches!(kind, "Stage" | "Phase" | "Job" | "Task") {
+        return None;
+    }
+    Some(json!({
+        "name": name,
+        "stage": kind,
+        "status": ado_run_status(json_str(v, "state"), json_str(v, "result")),
+        "order": json_i64(v.get("order")).unwrap_or(0),
+    }))
+}
+
+fn ado_timeline_rows(records: &[Value]) -> Vec<Value> {
+    let has_job = records.iter().any(|record| matches!(json_str(record, "type"), "Stage" | "Phase" | "Job"));
+    let mut rows: Vec<Value> = records
+        .iter()
+        .filter(|record| {
+            let kind = json_str(record, "type");
+            if has_job {
+                matches!(kind, "Stage" | "Phase" | "Job")
+            } else {
+                kind == "Task"
+            }
+        })
+        .filter_map(map_ado_timeline)
+        .collect();
+    rows.sort_by_key(|row| row.get("order").and_then(Value::as_i64).unwrap_or(0));
+    rows
+}
+
+async fn ado_read(response: reqwest::Response) -> Result<(Value, Option<String>), String> {
+    let status = response.status();
+    if status.is_redirection() {
+        return Err("Azure DevOps redirected the request".into());
+    }
+    let continuation = response
+        .headers()
+        .get("x-ms-continuationtoken")
+        .and_then(|value| value.to_str().ok())
+        .and_then(ado_continuation)
+        .map(str::to_string);
+    if status.as_u16() == 204 {
+        return Ok((json!({}), continuation));
+    }
+    if !status.is_success() {
+        log::line(format!("azuredevops HTTP {}", status.as_u16()));
+        return Err(status_error(
+            status.as_u16(),
+            "Token needs Code (Read), Build (Read) and Work Items (Read)",
+        ));
+    }
+    let json = response.json().await.map_err(|_| "Unexpected Azure DevOps response".to_string())?;
+    Ok((json, continuation))
+}
+
+async fn ado_get(http: &reqwest::Client, auth: &str, url: &str) -> Result<(Value, Option<String>), String> {
+    let response = http
+        .get(url)
+        .header("Authorization", auth)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("No connection: {err}"))?;
+    ado_read(response).await
+}
+
+async fn ado_get_query(
+    http: &reqwest::Client,
+    auth: &str,
+    url: &str,
+    token: &str,
+) -> Result<(Value, Option<String>), String> {
+    let response = http
+        .get(url)
+        .query(&[("continuationToken", token)])
+        .header("Authorization", auth)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("No connection: {err}"))?;
+    ado_read(response).await
+}
+
+async fn ado_post(http: &reqwest::Client, auth: &str, url: &str, body: &Value) -> Result<Value, String> {
+    let response = http
+        .post(url)
+        .header("Authorization", auth)
+        .header("Accept", "application/json")
+        .header("Content-Type", "application/json")
+        .json(body)
+        .send()
+        .await
+        .map_err(|err| format!("No connection: {err}"))?;
+    Ok(ado_read(response).await?.0)
+}
+
+fn ado_values(json: &Value) -> Result<&Vec<Value>, String> {
+    json.get("value")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Unexpected Azure DevOps response".to_string())
+}
+
+fn ado_ids(json: &Value, cap: usize) -> Vec<i64> {
+    json.get("workItems")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| json_i64(item.get("id")).filter(|id| *id > 0))
+                .take(cap)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn ado_page(items: Vec<Value>, continuation: Option<String>) -> Value {
+    json!({
+        "items": items,
+        "continuation": continuation,
+    })
+}
+
+async fn ado_work_items(http: &reqwest::Client, auth: &str, base: &str, ids: &[i64]) -> Result<Vec<Value>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let list = ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+    let url = format!(
+        "{base}/_apis/wit/workitems?ids={list}&fields=System.Id,System.Title,System.State,System.AssignedTo,System.ChangedDate,System.TeamProject&api-version=7.1"
+    );
+    let (json, _) = ado_get(http, auth, &url).await?;
+    Ok(ado_values(&json)?.clone())
+}
+
+async fn poll_azuredevops(app: AppHandle) {
+    let Some(token) = secrets::get("azuredevops-token") else { return };
+    let Some(raw) = secrets::get("azuredevops-url") else {
+        ado_error(&app, "Organization URL missing".into());
+        return;
+    };
+    let base = match ado_base(&raw) {
+        Ok(base) => base,
+        Err(err) => {
+            ado_error(&app, err);
+            return;
+        }
+    };
+    let http = ado_http();
+    let auth = ado_auth(&token);
+    let projects_url = format!("{base}/_apis/projects?api-version=7.1&$top=100&stateFilter=wellFormed");
+    let (projects_json, _) = match ado_get(&http, &auth, &projects_url).await {
+        Ok(page) => page,
+        Err(err) => {
+            ado_error(&app, err);
+            return;
+        }
+    };
+    let Ok(raw_projects) = ado_values(&projects_json) else {
+        ado_error(&app, "Unexpected Azure DevOps response".into());
+        return;
+    };
+    let mut projects: Vec<AdoProject> = raw_projects.iter().filter_map(map_ado_project_ref).collect();
+    projects.sort_by(|a, b| b.updated.cmp(&a.updated));
+    projects.truncate(ADO_POLL_PROJECTS);
+
+    let mut pipelines = Vec::new();
+    for project in &projects {
+        let url = format!(
+            "{base}/{}/_apis/build/builds?api-version=7.1&queryOrder=queueTimeDescending&$top=5",
+            project.id
+        );
+        let Ok((json, _)) = ado_get(&http, &auth, &url).await else {
+            log::line(format!("azuredevops builds skipped for {}", project.name));
+            continue;
+        };
+        let Ok(rows) = ado_values(&json) else { continue };
+        pipelines.extend(rows.iter().filter_map(|row| map_ado_build(row, &base, &project.name)));
+    }
+
+    let mut bugs = Vec::new();
+    let wiql_url = format!("{base}/_apis/wit/wiql?api-version=7.1&$top=8");
+    if let Ok(json) = ado_post(&http, &auth, &wiql_url, &json!({ "query": ADO_BUGS_RECENT_WIQL })).await {
+        let ids = ado_ids(&json, 8);
+        if let Ok(rows) = ado_work_items(&http, &auth, &base, &ids).await {
+            bugs.extend(rows.iter().filter_map(|row| map_ado_bug(row, &base)));
+        }
+    } else {
+        log::line("azuredevops bugs skipped");
+    }
+
+    let mut commits = Vec::new();
+    for project in projects.iter().take(ADO_POLL_COMMIT_PROJECTS) {
+        let url = format!("{base}/{}/_apis/git/repositories?api-version=7.1", project.id);
+        let Ok((json, _)) = ado_get(&http, &auth, &url).await else { continue };
+        let Ok(repos) = ado_values(&json) else { continue };
+        let mut repos: Vec<&Value> = repos.iter().collect();
+        repos.sort_by_key(|repo| {
+            let name = json_str(repo, "name");
+            if name.eq_ignore_ascii_case(&project.name) { 0 } else { 1 }
+        });
+        for repo in repos.into_iter().take(ADO_POLL_REPOS) {
+            let Some(repo_id) = repo.get("id").and_then(Value::as_str).filter(|id| ado_guid(id)) else { continue };
+            let repo_name = plain(json_str(repo, "name"), 160);
+            if repo_name.is_empty() {
+                continue;
+            }
+            let url = format!(
+                "{base}/{}/_apis/git/repositories/{repo_id}/commits?api-version=7.1&searchCriteria.$top=3",
+                project.id
+            );
+            let Ok((json, _)) = ado_get(&http, &auth, &url).await else { continue };
+            let Ok(rows) = ado_values(&json) else { continue };
+            commits.extend(
+                rows.iter()
+                    .filter_map(|row| map_ado_commit_hit(row, &base, &project.name, &repo_name)),
+            );
+        }
+    }
+
+    let failed = pipelines.iter().filter(|item| item.failure).max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let newest_pipe = pipelines.iter().max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let newest_bug = bugs.iter().max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let newest_commit = commits.iter().max_by(|a, b| a.created_at.cmp(&b.created_at));
+    let fail_new = ado_fresh("ado-pipeline-fail", failed.map(|item| item.seen.as_str()));
+    let bug_new = ado_fresh("ado-bug", newest_bug.map(|item| item.seen.as_str()));
+    let pipe_new = ado_fresh("ado-pipeline", newest_pipe.map(|item| item.seen.as_str()));
+    let commit_new = ado_fresh("ado-commit", newest_commit.map(|item| item.seen.as_str()));
+    let alert = ado_choose(
+        failed,
+        newest_pipe,
+        newest_bug,
+        newest_commit,
+        fail_new,
+        bug_new,
+        pipe_new,
+        commit_new,
+    );
+    let event = alert.map(|item| {
+        let (label, detail) = ado_alert(item);
+        let phase = if item.kind == "pipeline" && item.status == "running" {
+            Some("working")
+        } else if item.failure {
+            Some("error")
+        } else {
+            None
+        };
+        IntegrationEvent { success: !item.failure, label, detail, phase }
+    });
+    let pipe_count = pipelines.len();
+    let bug_count = bugs.len();
+    let commit_count = commits.len();
+    let shown: Vec<Value> = ado_digest(pipelines, bugs, commits).iter().map(ado_hit_json).collect();
+    log::line(format!(
+        "azuredevops {pipe_count} pipeline(s), {bug_count} bug(s), {commit_count} commit(s)"
+    ));
+    emit(&app, IntegrationUpdate {
+        id: "integration_azuredevops",
+        data: json!({ "webUrl": base, "events": shown }),
+        error: None,
+        event,
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoBrowseRequest {
+    pub kind: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub repository_id: Option<String>,
+    #[serde(default)]
+    pub build_id: Option<i64>,
+    #[serde(default)]
+    pub continuation: Option<String>,
+}
+
+pub async fn azuredevops_browse(req: AdoBrowseRequest) -> Result<Value, String> {
+    let token = secrets::get("azuredevops-token").ok_or_else(|| "Azure DevOps token missing".to_string())?;
+    let raw = secrets::get("azuredevops-url").ok_or_else(|| "Organization URL missing".to_string())?;
+    let base = ado_base(&raw)?;
+    let http = ado_http();
+    let auth = ado_auth(&token);
+    match req.kind.as_str() {
+        "projects" => ado_browse_projects(&http, &auth, &base, req.continuation.as_deref()).await,
+        "repos" => {
+            let project = ado_guid_id(req.project_id)?;
+            let (json, _) = ado_get(
+                &http,
+                &auth,
+                &format!("{base}/{project}/_apis/git/repositories?api-version=7.1"),
+            )
+            .await?;
+            let items = ado_values(&json)?.iter().filter_map(|row| map_ado_repo(row, &base)).collect();
+            Ok(ado_page(items, None))
+        }
+        "commits" => {
+            let project = ado_guid_id(req.project_id)?;
+            let repo = ado_guid_id(req.repository_id)?;
+            let skip = match req.continuation.as_deref() {
+                Some(token) => ado_skip(token)?,
+                None => 0,
+            };
+            let (name, repo_name) = ado_repo_names(&http, &auth, &base, &project, &repo).await?;
+            let (json, _) = ado_get(
+                &http,
+                &auth,
+                &format!(
+                    "{base}/{project}/_apis/git/repositories/{repo}/commits?api-version=7.1&searchCriteria.$top={ADO_PAGE}&searchCriteria.$skip={skip}"
+                ),
+            )
+            .await?;
+            let items: Vec<Value> = ado_values(&json)?
+                .iter()
+                .filter_map(|row| map_ado_commit(row, &base, &name, &repo_name))
+                .collect();
+            let next = (items.len() as u32 >= ADO_PAGE && skip + ADO_PAGE <= 2000).then(|| (skip + ADO_PAGE).to_string());
+            Ok(ado_page(items, next))
+        }
+        "pipelines" => {
+            let project = ado_guid_id(req.project_id.clone())?;
+            let name = ado_project_name(&http, &auth, &base, &project).await?;
+            let url = format!(
+                "{base}/{project}/_apis/build/builds?api-version=7.1&queryOrder=queueTimeDescending&$top={ADO_PAGE}"
+            );
+            let (json, token) = match req.continuation.as_deref() {
+                Some(token) => {
+                    let token = ado_continuation(token).ok_or("Bad page token")?;
+                    ado_get_query(&http, &auth, &url, token).await?
+                }
+                None => ado_get(&http, &auth, &url).await?,
+            };
+            let items: Vec<Value> = ado_values(&json)?
+                .iter()
+                .filter_map(|row| map_ado_build_row(row, &base, &name))
+                .collect();
+            let next = if items.is_empty() { None } else { token };
+            Ok(ado_page(items, next))
+        }
+        "timeline" => {
+            let project = ado_guid_id(req.project_id)?;
+            let build = positive_id(req.build_id).map_err(|_| "Missing Azure DevOps id".to_string())?;
+            let (json, _) = ado_get(
+                &http,
+                &auth,
+                &format!("{base}/{project}/_apis/build/builds/{build}/timeline?api-version=7.1"),
+            )
+            .await?;
+            let records = json.get("records").and_then(Value::as_array).cloned().unwrap_or_default();
+            Ok(ado_page(ado_timeline_rows(&records), None))
+        }
+        "bugs" => {
+            let project = ado_guid_id(req.project_id)?;
+            let json = ado_post(
+                &http,
+                &auth,
+                &format!("{base}/{project}/_apis/wit/wiql?api-version=7.1&$top={ADO_PAGE}"),
+                &json!({ "query": ADO_BUGS_WIQL }),
+            )
+            .await?;
+            let ids = ado_ids(&json, ADO_PAGE as usize);
+            let rows = ado_work_items(&http, &auth, &base, &ids).await?;
+            let items = rows.iter().filter_map(|row| map_ado_bug_row(row, &base)).collect();
+            Ok(ado_page(items, None))
+        }
+        _ => Err("Unknown Azure DevOps screen".into()),
+    }
+}
+
+async fn ado_browse_projects(
+    http: &reqwest::Client,
+    auth: &str,
+    base: &str,
+    continuation: Option<&str>,
+) -> Result<Value, String> {
+    let url = format!("{base}/_apis/projects?api-version=7.1&$top={ADO_PAGE}&stateFilter=wellFormed");
+    let (json, token) = match continuation {
+        Some(token) => {
+            let token = ado_continuation(token).ok_or("Bad page token")?;
+            ado_get_query(http, auth, &url, token).await?
+        }
+        None => ado_get(http, auth, &url).await?,
+    };
+    let items: Vec<Value> = ado_values(&json)?.iter().filter_map(|row| map_ado_project(row, base)).collect();
+    let next = if items.is_empty() { None } else { token };
+    Ok(ado_page(items, next))
+}
+
+async fn ado_project_name(http: &reqwest::Client, auth: &str, base: &str, id: &str) -> Result<String, String> {
+    let (json, _) = ado_get(http, auth, &format!("{base}/_apis/projects/{id}?api-version=7.1")).await?;
+    let name = plain(json_str(&json, "name"), 120);
+    if name.is_empty() {
+        return Err("Unexpected Azure DevOps response".into());
+    }
+    Ok(name)
+}
+
+async fn ado_repo_names(
+    http: &reqwest::Client,
+    auth: &str,
+    base: &str,
+    project: &str,
+    repo: &str,
+) -> Result<(String, String), String> {
+    let (json, _) = ado_get(
+        http,
+        auth,
+        &format!("{base}/{project}/_apis/git/repositories/{repo}?api-version=7.1"),
+    )
+    .await?;
+    let repo_name = plain(json_str(&json, "name"), 160);
+    let project_name = json
+        .get("project")
+        .and_then(|project| project.get("name"))
+        .and_then(Value::as_str)
+        .map(|name| plain(name, 120))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| String::new());
+    if repo_name.is_empty() {
+        return Err("Unexpected Azure DevOps response".into());
+    }
+    let project_name = if project_name.is_empty() {
+        ado_project_name(http, auth, base, project).await?
+    } else {
+        project_name
+    };
+    Ok((project_name, repo_name))
 }
 
 // ── Jenkins ───────────────────────────────────────────────────────────────────
@@ -2075,5 +3041,156 @@ mod jenkins_tests {
         assert!(jenkins_keep("success", now - 60_000, now));
         assert!(!jenkins_keep("failure", now - JENKINS_RECENT_MS - 1, now));
         assert!(!jenkins_keep("unknown", now, now));
+    }
+}
+
+#[cfg(test)]
+mod ado_tests {
+    use super::*;
+
+    fn hit(kind: &'static str, title: &str, status: &str, at: &str, failure: bool) -> AdoHit {
+        AdoHit {
+            seen: format!("{kind}:{title}:{status}"),
+            kind,
+            title: title.into(),
+            project: "App".into(),
+            author: "Ada".into(),
+            reference: String::new(),
+            status: status.into(),
+            iid: None,
+            created_at: at.into(),
+            failure,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn organization_url_keeps_the_org_and_drops_a_pasted_screen() {
+        assert_eq!(ado_base("https://dev.azure.com/fabrikam").as_deref(), Ok("https://dev.azure.com/fabrikam"));
+        assert_eq!(
+            ado_base("https://dev.azure.com/fabrikam/App/_build").as_deref(),
+            Ok("https://dev.azure.com/fabrikam")
+        );
+        assert_eq!(
+            ado_base("https://Fabrikam.visualstudio.com/App").as_deref(),
+            Ok("https://fabrikam.visualstudio.com")
+        );
+        assert_eq!(
+            ado_base("https://ado.example.com/tfs/DefaultCollection/_git/app").as_deref(),
+            Ok("https://ado.example.com/tfs/DefaultCollection")
+        );
+        assert!(ado_base("https://user:pat@dev.azure.com/fabrikam").is_err());
+        assert!(ado_base("https://dev.azure.com").is_err());
+        assert!(ado_base("file:///tmp/ado").is_err());
+    }
+
+    #[test]
+    fn failed_pipeline_beats_a_bug_and_a_commit() {
+        let failed = hit("pipeline", "CI", "failed", "2026-10-05T08:00:00Z", true);
+        let bug = hit("bug", "Crash", "Active", "2026-10-05T09:00:00Z", true);
+        let commit = hit("commit", "Fix", "", "2026-10-05T10:00:00Z", false);
+        let picked = ado_choose(Some(&failed), Some(&failed), Some(&bug), Some(&commit), true, true, true, true);
+        assert_eq!(picked.map(|item| item.kind), Some("pipeline"));
+        let picked = ado_choose(Some(&failed), Some(&failed), Some(&bug), Some(&commit), false, true, true, true);
+        assert_eq!(picked.map(|item| item.title.as_str()), Some("Crash"));
+    }
+
+    #[test]
+    fn the_card_keeps_one_of_each_kind_in_front() {
+        let pipes = vec![
+            hit("pipeline", "CI", "failed", "2026-10-05T08:00:00Z", true),
+            hit("pipeline", "Nightly", "success", "2026-10-05T07:00:00Z", false),
+            hit("pipeline", "PR", "running", "2026-10-05T06:00:00Z", false),
+        ];
+        let bugs = vec![hit("bug", "Crash", "Active", "2026-10-05T09:00:00Z", true)];
+        let commits = vec![hit("commit", "Fix", "", "2026-10-05T10:00:00Z", false)];
+        let shown = ado_digest(pipes, bugs, commits);
+        assert_eq!(shown[0].status, "running");
+        assert_eq!(shown[1].kind, "bug");
+        assert_eq!(shown[2].kind, "commit");
+    }
+
+    #[test]
+    fn a_failed_build_links_back_to_the_organization() {
+        let build = json!({
+            "id": 42,
+            "buildNumber": "20261005.1",
+            "status": "completed",
+            "result": "failed",
+            "sourceBranch": "refs/heads/main",
+            "sourceVersion": "abcdef1234567890abcdef1234567890abcdef12",
+            "queueTime": "2026-10-05T08:00:00Z",
+            "definition": { "name": "CI" },
+            "requestedFor": { "displayName": "Ada" },
+            "_links": { "web": { "href": "https://dev.azure.com/fabrikam/App/_build/results?buildId=42" } }
+        });
+        let hit = map_ado_build(&build, "https://dev.azure.com/fabrikam", "App").unwrap();
+        assert_eq!(hit.status, "failed");
+        assert!(hit.failure);
+        assert_eq!(hit.reference, "main");
+        assert_eq!(hit.title, "CI");
+        assert_eq!(
+            hit.url.as_deref(),
+            Some("https://dev.azure.com/fabrikam/App/_build/results?buildId=42")
+        );
+        let foreign = json!({
+            "id": 7,
+            "status": "inProgress",
+            "result": "",
+            "sourceBranch": "refs/heads/dev",
+            "queueTime": "2026-10-05T08:00:00Z",
+            "definition": { "name": "CI" },
+            "_links": { "web": { "href": "https://evil.example/build" } }
+        });
+        let hit = map_ado_build(&foreign, "https://dev.azure.com/fabrikam", "App").unwrap();
+        assert_eq!(hit.status, "running");
+        assert_eq!(
+            hit.url.as_deref(),
+            Some("https://dev.azure.com/fabrikam/App/_build/results?buildId=7")
+        );
+    }
+
+    #[test]
+    fn a_commit_and_a_bug_keep_their_text() {
+        let commit = json!({
+            "commitId": "abcdef1234567890abcdef1234567890abcdef12",
+            "comment": "Fix login\n\nThe form rejected empty names.",
+            "author": { "name": "Ada", "email": "ada@example.com", "date": "2026-10-05T08:00:00Z" },
+            "remoteUrl": "https://dev.azure.com/fabrikam/App/_git/api/commit/abcdef1234567890abcdef1234567890abcdef12"
+        });
+        let row = map_ado_commit(&commit, "https://dev.azure.com/fabrikam", "App", "api").unwrap();
+        assert_eq!(row["title"], "Fix login");
+        assert_eq!(row["author"], "Ada");
+        assert!(row["message"].as_str().unwrap().contains("empty names"));
+
+        let bug = json!({
+            "id": 12,
+            "fields": {
+                "System.Title": "Save button does nothing",
+                "System.State": "Active",
+                "System.TeamProject": "App",
+                "System.ChangedDate": "2026-10-05T09:00:00Z",
+                "System.AssignedTo": { "displayName": "Ada" }
+            },
+            "_links": { "html": { "href": "https://dev.azure.com/fabrikam/App/_workitems/edit/12" } }
+        });
+        let hit = map_ado_bug(&bug, "https://dev.azure.com/fabrikam").unwrap();
+        assert_eq!(hit.iid, Some(12));
+        assert!(hit.failure);
+        assert_eq!(hit.author, "Ada");
+        assert!(!ado_bug_failure("Resolved"));
+    }
+
+    #[test]
+    fn timeline_prefers_stages_over_tasks() {
+        let records = vec![
+            json!({"name": "Build", "type": "Job", "state": "completed", "result": "failed", "order": 2}),
+            json!({"name": "npm test", "type": "Task", "state": "completed", "result": "failed", "order": 1}),
+            json!({"name": "CI", "type": "Stage", "state": "completed", "result": "succeeded", "order": 1}),
+        ];
+        let rows = ado_timeline_rows(&records);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "CI");
+        assert_eq!(rows[1]["status"], "failed");
     }
 }

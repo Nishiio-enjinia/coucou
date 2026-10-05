@@ -56,6 +56,8 @@ export const Bridge = {
   openInVSCode: (path: string | null) => call<boolean>("open_in_vscode", { path }),
   /** Opens Cursor, on a project folder when the hook reported one. */
   openCursor: (path: string | null) => call<boolean>("open_cursor", { path }),
+  /** Copilot app (the CLI). The IDE session opens VS Code instead. */
+  openCopilot: (path: string | null) => call<boolean>("open_copilot", { path }),
 
   quit: () => call<void>("quit_app"),
 
@@ -107,6 +109,9 @@ export const Bridge = {
   /** Projects, commits or pipelines. The token never leaves Rust. */
   gitlabBrowse: (req: GitlabBrowseRequest) =>
     callOrThrow<GitlabRow[]>("gitlab_browse", { req }),
+  /** Projects, pipelines, commits and bugs. The token never leaves Rust. */
+  azuredevopsBrowse: (req: AdoBrowseRequest) =>
+    callOrThrow<AdoPage>("azuredevops_browse", { req }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 
@@ -122,6 +127,21 @@ export interface GitlabBrowseRequest {
 }
 
 export type GitlabRow = Record<string, unknown>;
+
+export interface AdoBrowseRequest {
+  kind: "projects" | "repos" | "commits" | "pipelines" | "timeline" | "bugs";
+  projectId?: string;
+  repositoryId?: string;
+  buildId?: number;
+  continuation?: string;
+}
+
+export interface AdoPage {
+  items: AdoRow[];
+  continuation: string | null;
+}
+
+export type AdoRow = Record<string, unknown>;
 
 export interface IntegrationUpdate {
   id: string;
@@ -161,7 +181,7 @@ export interface HookPreview {
 }
 
 export interface IdeStatus {
-  id: "claude" | "cursor";
+  id: "claude" | "cursor" | "copilot";
   installed: boolean;
   settingsPath: string;
   hookPath: string;
@@ -169,7 +189,7 @@ export interface IdeStatus {
 }
 
 export interface IdeChange {
-  id: "claude" | "cursor";
+  id: "claude" | "cursor" | "copilot";
   install: boolean;
   diff: string;
   backup: string;

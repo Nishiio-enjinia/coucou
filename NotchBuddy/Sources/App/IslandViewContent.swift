@@ -208,6 +208,8 @@ struct OverviewView: View {
                 NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
             }
             #endif
+        case "agent_copilot":
+            openCopilotHost()
         case "agent_gemini", "agent_antigravity":
             #if !APPSTORE
             let terminalBundleIds = ["com.apple.Terminal", "com.googlecode.iterm2",
@@ -1589,6 +1591,12 @@ struct IntegrationCardView: View {
             #endif
         case "agent_cursor", "agent_codex":
             return false  // coming soon
+        case "agent_copilot":
+            #if !APPSTORE
+            return HookServer.copilotHooksInstalled()
+            #else
+            return false
+            #endif
         case "integration_music":
             #if !APPSTORE
             return true  // Apple Music is always installed on macOS
@@ -1885,6 +1893,13 @@ struct IntegrationCardView: View {
                             .buttonStyle(.plain)
                         }
                         #endif
+                    } else if task.id == "agent_copilot" {
+                        #if !APPSTORE
+                        Button(L10n.t("int.openCopilot")) { openCopilotHost() }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(Color(hex: task.color).opacity(0.85))
+                            .buttonStyle(.plain)
+                        #endif
                     } else if task.id == "agent_codex" {
                         #if !APPSTORE
                         if let url = NSWorkspace.shared.urlForApplication(
@@ -2013,6 +2028,28 @@ struct IntegrationCardView: View {
         }
         if let appURL = appURL {
             NSWorkspace.shared.openApplication(at: appURL, configuration: .init(), completionHandler: nil)
+        }
+    }
+
+    /// Copilot lives in the IDE and in the terminal app. Bring forward whichever is already open.
+    private func openCopilotHost() {
+        let vscodeIds = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium.codium"]
+        if let running = vscodeIds.compactMap({ id in
+            NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
+        }).first {
+            running.activate(options: .activateIgnoringOtherApps)
+            return
+        }
+        let terminals = ["com.apple.Terminal", "com.googlecode.iterm2",
+                         "net.kovidgoyal.kitty", "com.mitchellh.ghostty"]
+        if let term = terminals.compactMap({ id in
+            NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == id }
+        }).first {
+            term.activate(options: .activateIgnoringOtherApps)
+            return
+        }
+        if let url = vscodeIds.compactMap({ NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }).first {
+            NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
         }
     }
 

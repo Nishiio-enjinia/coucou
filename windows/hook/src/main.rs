@@ -33,6 +33,9 @@ const DROPPED_FIELDS: &[&str] = &[
     "tool_response",
     "tool_output",
     "transcript_path",
+    "transcriptPath",
+    "toolResult",
+    "tool_result",
     "content",
     "attachments",
     "edits",
@@ -141,6 +144,13 @@ fn read_event() -> Option<(String, String)> {
     {
         event = "StopFailure".into();
     }
+    // A recoverable Copilot error is noise. A real failure takes the error state.
+    if matches!(raw_event.as_str(), "errorOccurred" | "ErrorOccurred")
+        && map.get("recoverable").and_then(|v| v.as_bool()) != Some(true)
+    {
+        event = "StopFailure".into();
+    }
+    absorb_tool_fields(map);
     map.insert(
         "hook_event_name".into(),
         serde_json::Value::String(event.clone()),
@@ -209,21 +219,90 @@ fn read_event() -> Option<(String, String)> {
     Some((line, event))
 }
 
-/// Cursor, Gemini and Antigravity spell events differently. Claude's names pass through.
+/// Cursor, Gemini, Antigravity and Copilot spell events differently. Claude's names pass through.
 fn canonical_event(name: &str) -> String {
     match name {
         "sessionStart" | "startup" => "SessionStart",
         "sessionEnd" | "exit" => "SessionEnd",
-        "beforeSubmitPrompt" | "BeforeAgent" | "PreInvocation" => "UserPromptSubmit",
+        "beforeSubmitPrompt" | "BeforeAgent" | "PreInvocation" | "userPromptSubmitted" => {
+            "UserPromptSubmit"
+        }
         "preToolUse" | "BeforeTool" | "BeforeToolSelection" => "PreToolUse",
         "postToolUse" | "AfterTool" | "PostInvocation" => "PostToolUse",
         "postToolUseFailure" => "PostToolUseFailure",
         "subagentStart" => "SubagentStart",
         "subagentStop" => "SubagentStop",
-        "stop" | "AfterAgent" => "Stop",
+        "stop" | "AfterAgent" | "agentStop" => "Stop",
+        "errorOccurred" | "ErrorOccurred" => "ErrorOccurred",
         other => other,
     }
     .to_string()
+}
+
+/// Copilot CLI sends `toolName` / `toolArgs`. The island speaks Claude's names.
+fn absorb_tool_fields(map: &mut serde_json::Map<String, serde_json::Value>) {
+    let current = map.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+    let raw = if current.is_empty() {
+        map.get("toolName").and_then(|v| v.as_str()).unwrap_or("")
+    } else {
+        current
+    };
+    if !raw.is_empty() {
+        map.insert(
+            "tool_name".into(),
+            serde_json::Value::String(canonical_copilot_tool(raw)),
+        );
+    }
+    if map.get("tool_input").is_none() {
+        let args = map
+            .get("toolArgs")
+            .cloned()
+            .filter(|v| v.is_object());
+        if let Some(serde_json::Value::Object(args)) = args {
+            map.insert(
+                "tool_input".into(),
+                serde_json::Value::Object(alias_tool_args(args)),
+            );
+        }
+    }
+}
+
+fn canonical_copilot_tool(name: &str) -> String {
+    match name {
+        "bash" | "powershell" => "Bash",
+        "view" => "Read",
+        "create" => "Write",
+        "edit" | "str_replace_editor" | "apply_patch" => "Edit",
+        "grep" | "rg" => "Grep",
+        "glob" => "Glob",
+        "web_fetch" => "WebFetch",
+        "web_search" => "WebSearch",
+        "ask_user" => "AskUserQuestion",
+        "update_todo" => "TodoWrite",
+        "task" => "Agent",
+        other => other,
+    }
+    .to_string()
+}
+
+fn alias_tool_args(
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    if !args.contains_key("file_path") {
+        if let Some(value) = args.get("filePath").cloned() {
+            args.insert("file_path".into(), value);
+        }
+    }
+    if !args.contains_key("command") {
+        if let Some(value) = args
+            .get("commandLine")
+            .cloned()
+            .or_else(|| args.get("cmd").cloned())
+        {
+            args.insert("command".into(), value);
+        }
+    }
+    args
 }
 
 fn first_string_list(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
@@ -321,5 +400,24 @@ mod tests {
         let s = v["tool_input"]["content"].as_str().unwrap();
         assert!(s.len() <= MAX_FIELD_LEN + 4);
         assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn copilot_events_and_tools_use_claude_names() {
+        assert_eq!(canonical_event("userPromptSubmitted"), "UserPromptSubmit");
+        assert_eq!(canonical_event("agentStop"), "Stop");
+        assert_eq!(canonical_event("errorOccurred"), "ErrorOccurred");
+        assert_eq!(canonical_copilot_tool("bash"), "Bash");
+        assert_eq!(canonical_copilot_tool("view"), "Read");
+        assert_eq!(canonical_copilot_tool("Edit"), "Edit");
+
+        let mut payload = serde_json::json!({
+            "toolName": "edit",
+            "toolArgs": { "filePath": "src/main.ts" },
+            "sessionId": "s1"
+        });
+        absorb_tool_fields(payload.as_object_mut().unwrap());
+        assert_eq!(payload["tool_name"], "Edit");
+        assert_eq!(payload["tool_input"]["file_path"], "src/main.ts");
     }
 }

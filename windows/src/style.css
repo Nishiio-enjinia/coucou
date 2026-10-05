@@ -1368,7 +1368,8 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ── GitLab browser (full panel) ────────────────────────────────────────── */
 
-.view.gitlab {
+.view.gitlab,
+.view.azuredevops {
   display: flex;
 }
 
@@ -1615,4 +1616,13 @@ input[type="range"]::-webkit-slider-thumb {
   color: var(--ink-2);
   user-select: text;
   word-break: break-word;
+}
+
+.view.azuredevops .gl-tab.on {
+  background: rgba(0, 120, 212, 0.22);
+}
+
+.view.azuredevops .gl-text,
+.view.azuredevops .gl-sha {
+  color: #4ea4f0;
 }

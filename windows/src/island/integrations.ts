@@ -12,6 +12,7 @@ const KEY_FOR: Record<string, string> = {
   integration_stripe: "stripe-api-key",
   integration_github: "github-token",
   integration_gitlab: "gitlab-token",
+  integration_azuredevops: "azuredevops-token",
   integration_jenkins: "jenkins-token",
   integration_vercel: "vercel-token",
   integration_n8n: "n8n-api-key",
@@ -39,6 +40,11 @@ export async function refreshConfigured() {
     const url = (await Bridge.secretPresent("gitlab-url")) ?? false;
     gitlab.configured = gitlab.configured && url;
   }
+  const azure = State.integrations.integration_azuredevops;
+  if (azure) {
+    const url = (await Bridge.secretPresent("azuredevops-url")) ?? false;
+    azure.configured = azure.configured && url;
+  }
   const jenkins = State.integrations.integration_jenkins;
   if (jenkins) {
     const url = (await Bridge.secretPresent("jenkins-url")) ?? false;
@@ -56,6 +62,11 @@ export async function refreshConfigured() {
     data: {}, error: null, loaded: false, configured: false,
   };
   State.integrations.agent_cursor = { ...cursor, configured: cursorHooks };
+  const copilotHooks = rows.find((row) => row.id === "copilot")?.installed ?? false;
+  const copilot = State.integrations.agent_copilot ?? {
+    data: {}, error: null, loaded: false, configured: false,
+  };
+  State.integrations.agent_copilot = { ...copilot, configured: copilotHooks };
   State.notify();
 }
 

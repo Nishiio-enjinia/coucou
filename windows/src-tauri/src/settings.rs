@@ -29,7 +29,7 @@ pub struct Settings {
     /// "system", "en" or "fr". Missing on older settings files means system.
     #[serde(default = "default_language")]
     pub language: String,
-    /// Workspace pill kept on the island. "integration_claude" or "agent_cursor".
+    /// Workspace pill kept on the island. "integration_claude", "agent_cursor" or "agent_copilot".
     #[serde(default = "default_main_pill")]
     pub main_pill: String,
 }

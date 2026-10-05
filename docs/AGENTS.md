@@ -99,7 +99,7 @@ A **declared pill** is a catalog entry (`PillCatalog.swift`) that has been enabl
 
 A catalog pill that is not checked in Settings behaves like any other agent: it gets an automatic pill when a session starts, and that pill is removed when the session ends.
 
-The GitHub build exposes Gemini CLI (`agent_gemini`) and Antigravity (`agent_antigravity`) in Settings → Active pills. Cursor (`agent_cursor`) and Codex (`agent_codex`, GitHub build only) are there too — their pills can be declared and set as the main pill; session support is coming in a future version.
+The GitHub build exposes Gemini CLI (`agent_gemini`) and Antigravity (`agent_antigravity`) in Settings → Active pills. Cursor (`agent_cursor`) and Codex (`agent_codex`, GitHub build only) are there too — their pills can be declared and set as the main pill; session support is coming in a future version. GitHub Copilot (`agent_copilot`, GitHub build only) is a workspace pill for both Copilot in the IDE and the Copilot app: one hook file, `~/.copilot/hooks/coucou.json`, is loaded by both.
 
 ## Real-world examples
 

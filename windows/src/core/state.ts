@@ -19,6 +19,8 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Copilot only: the session came from the IDE, or from the Copilot app. */
+  sessionHost?: "ide" | "cli" | null;
 }
 
 export interface ApprovalInfo {
@@ -60,6 +62,7 @@ const task = (
 export const WORKSPACE_PILLS: AgentTask[] = [
   task("integration_claude", "VS Code", "#F5F6F8", "claudeCode"),
   task("agent_cursor", "Cursor", "#C0C4CC", "agent"),
+  task("agent_copilot", "Copilot", "#3B82F6", "agent"),
 ];
 
 export const INTEGRATION_AGENTS: AgentTask[] = [
@@ -69,6 +72,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
   task("integration_github", "GitHub", "#F4505E", "n8n"),
   task("integration_gitlab", "GitLab", "#E24329", "n8n"),
+  task("integration_azuredevops", "Azure DevOps", "#0078D4", "n8n"),
   task("integration_jenkins", "Jenkins", "#D33833", "n8n"),
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
@@ -77,7 +81,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_gitlab", "integration_jenkins", "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_gitlab", "integration_azuredevops", "integration_jenkins", "integration_notion", "integration_calcom", "integration_stripe",
 ];
 
 /** What an integration poller last reported. */

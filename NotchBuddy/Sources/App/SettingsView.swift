@@ -52,6 +52,11 @@ struct SettingsView: View {
     @State private var showCodexDiff: Bool = false
     @State private var pendingCodexJSON: String = ""
     @State private var codexPendingInstall: Bool = true
+
+    @State private var copilotHooksInstalled: Bool = HookServer.copilotHooksInstalled()
+    @State private var showCopilotDiff: Bool = false
+    @State private var pendingCopilotJSON: String = ""
+    @State private var copilotPendingInstall: Bool = true
     #endif
 
     // Multi-provider chat keys
@@ -488,6 +493,39 @@ struct SettingsView: View {
                         Button(L10n.t("hooks.confirm")) { confirmCodexOp() }
                             .buttonStyle(.borderedProminent)
                         Button(L10n.t("common.cancel")) { showCodexDiff = false; pendingCodexJSON = "" }
+                            .buttonStyle(.bordered)
+                    }
+                }
+            }
+            .padding(6)
+        }
+
+        GroupBox(L10n.t("hooks.copilot")) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(copilotHooksInstalled
+                     ? L10n.t("hooks.copilotReady")
+                     : "~/.copilot/hooks/coucou.json")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+                HStack(spacing: 10) {
+                    Button(L10n.t("hooks.install")) { triggerCopilotPreview(install: true) }
+                        .buttonStyle(.borderedProminent)
+                    Button(L10n.t("hooks.uninstall")) { triggerCopilotPreview(install: false) }
+                        .buttonStyle(.bordered)
+                }
+                if showCopilotDiff {
+                    ScrollView {
+                        Text(pendingCopilotJSON)
+                            .font(.system(size: 10, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 140)
+                    .background(Color(NSColor.textBackgroundColor))
+                    .cornerRadius(6)
+                    HStack {
+                        Button(L10n.t("hooks.confirm")) { confirmCopilotOp() }
+                            .buttonStyle(.borderedProminent)
+                        Button(L10n.t("common.cancel")) { showCopilotDiff = false; pendingCopilotJSON = "" }
                             .buttonStyle(.bordered)
                     }
                 }
@@ -1034,6 +1072,33 @@ struct SettingsView: View {
         }
     }
 
+    private func triggerCopilotPreview(install: Bool) {
+        do {
+            copilotPendingInstall = install
+            pendingCopilotJSON = try HookServer.shared.previewCopilotHooks(install: install)
+            showCopilotDiff = true
+            statusMessage = L10n.t("status.review")
+        } catch let e as NSError where e.domain == "CoucouNoop" {
+            statusMessage = e.localizedDescription
+        } catch {
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
+        }
+    }
+
+    private func confirmCopilotOp() {
+        do {
+            try HookServer.shared.writeCopilotHooks()
+            showCopilotDiff = false
+            pendingCopilotJSON = ""
+            copilotHooksInstalled = copilotPendingInstall
+            statusMessage = copilotPendingInstall
+                ? L10n.t("status.copilotOn")
+                : L10n.t("status.copilotOff")
+        } catch {
+            statusMessage = L10n.t("status.fail", ["message": error.localizedDescription])
+        }
+    }
+
     private func installStatusLine() {
         do {
             pendingStatusLineJSON = try HookServer.shared.previewStatusLine(install: true)
@@ -1195,6 +1260,7 @@ struct SettingsView: View {
             if def.id == "agent_gemini"        && !HookServer.geminiHooksInstalled()  { return L10n.t("int.hooksMissing") }
             if def.id == "agent_antigravity"   && !HookServer.agyHooksInstalled()    { return L10n.t("int.hooksMissing") }
             if def.id == "agent_codex"         && !HookServer.codexHooksInstalled()  { return L10n.t("int.hooksMissing") }
+            if def.id == "agent_copilot"       && !HookServer.copilotHooksInstalled() { return L10n.t("int.hooksMissing") }
             #endif
             if def.category == .ai {
                 if let provider = ChatProvider(pillID: def.id), provider.isLocal {

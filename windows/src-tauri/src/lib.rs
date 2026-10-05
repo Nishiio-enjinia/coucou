@@ -190,6 +190,38 @@ fn open_cursor(path: Option<String>) -> bool {
     platform::no_console(&mut cmd).spawn().is_ok()
 }
 
+/// Opens the Copilot app in the project folder. The IDE path uses VS Code.
+#[tauri::command]
+fn open_copilot(path: Option<String>) -> bool {
+    let path = path.filter(|p| !p.is_empty());
+    if let Some(p) = path.as_deref() {
+        let p = std::path::Path::new(p);
+        if !(p.is_absolute() && p.is_dir()) {
+            return false;
+        }
+    }
+    // A console the user can see. no_console would hide the Copilot app.
+    #[cfg(windows)]
+    if let Some(wt) = platform::find_on_path("wt") {
+        let mut cmd = Command::new(wt);
+        if let Some(p) = path.as_deref() {
+            cmd.arg("-d").arg(p);
+        }
+        cmd.arg("copilot");
+        if cmd.spawn().is_ok() {
+            return true;
+        }
+    }
+    let Some(exe) = platform::find_on_path("copilot") else {
+        return false;
+    };
+    let mut cmd = Command::new(exe);
+    if let Some(p) = path.as_deref() {
+        cmd.current_dir(p);
+    }
+    cmd.spawn().is_ok()
+}
+
 fn cursor_exe() -> Option<std::path::PathBuf> {
     // The Start-menu install is Cursor.exe. `cursor` on PATH is often a `.cmd`
     // shim, and CreateProcess will not launch a batch file.
@@ -387,6 +419,14 @@ async fn gitlab_browse(req: integrations::GitlabBrowseRequest) -> Result<serde_j
     integrations::gitlab_browse(req).await
 }
 
+/// Projects, commits, pipelines and bugs for the Azure DevOps browser.
+#[tauri::command]
+async fn azuredevops_browse(
+    req: integrations::AdoBrowseRequest,
+) -> Result<serde_json::Value, String> {
+    integrations::azuredevops_browse(req).await
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -485,6 +525,7 @@ pub fn run() {
             open_url,
             open_in_vscode,
             open_cursor,
+            open_copilot,
             quit_app,
             hooks_status,
             hooks_preview,
@@ -505,6 +546,7 @@ pub fn run() {
             secret_clear,
             refresh_integration,
             gitlab_browse,
+            azuredevops_browse,
             open_n8n,
             open_settings_window,
             set_paused,

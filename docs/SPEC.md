@@ -100,12 +100,12 @@ Toutes les pastilles déclarées sont définies dans `PillCatalog.all` (source d
 
 | Catégorie | Titre | Pastilles | Subtitle (repos) | Subtitle (session) |
 |---|---|---|---|---|
-| `workspace` | Where you code | VS Code, Cursor, Antigravity *(GitHub only)*, Codex *(GitHub only)* | Integration | Claude Code / Cursor / Codex / Agent |
+| `workspace` | Where you code | VS Code, Cursor, Antigravity *(GitHub only)*, Codex *(GitHub only)*, Copilot *(GitHub only)* | Integration | Claude Code / Cursor / Codex / Copilot / Agent |
 | `agent` | Agents | Gemini CLI *(GitHub only)* | Agent | Agent |
 | `ai` | AI for the chat | Anthropic, Google AI, OpenAI, Ollama, LM Studio | Chat | — |
 | `service` | Services | Resend, n8n, Vercel, GitHub, Notion, Cal.com, Stripe, Apple Music *(GitHub only)* | Integration | — |
 
-Couleurs : Cursor `#C0C4CC`, Codex `#2DD4BF`, Gemini CLI `#8AB4F8`, Antigravity `#E879F9`, pastilles IA = `ChatProvider.accentHex` (Ollama `#FACC15`, LM Studio `#A3E635`).
+Couleurs : Cursor `#C0C4CC`, Codex `#2DD4BF`, Copilot `#3B82F6`, Gemini CLI `#8AB4F8`, Antigravity `#E879F9`, pastilles IA = `ChatProvider.accentHex` (Ollama `#FACC15`, LM Studio `#A3E635`).
 
 Règles :
 - **`mainPillId`** (défaut `integration_claude`) est la pastille workspace toujours chargée. Elle ne compte pas dans les 4 places. Modifiable via le sélecteur Main dans Settings.
@@ -115,6 +115,7 @@ Règles :
 - `sortTasksByCatalog` : pastilles du catalogue dans l'ordre du catalogue ; pastilles hors catalogue juste après `integration_claude`.
 - Pastilles `githubOnly` : exclues des builds App Store (`#if APPSTORE`).
 - Hooks (Gemini CLI, Antigravity, Codex) : `isConfigured` = `HookServer.geminiHooksInstalled()` / `agyHooksInstalled()` / `codexHooksInstalled()` sous `#if !APPSTORE`. La section Codex Hooks dans Settings installe les hooks dans `~/.codex/hooks.json` avec le même flux backup + preview que Gemini CLI. Après l'installation, la carte affiche : « run /hooks in Codex or open Hooks in the app's settings to trust them ». Approbations Codex : carte avec Allow et Deny seulement (pas Always) ; updatedPermissions jamais envoyé ; notes « Handled in Codex. » / « Still waiting in Codex. ».
+- Copilot *(GitHub only)* : une seule pastille `agent_copilot` pour l'IDE et l'app. Les hooks vivent dans `~/.copilot/hooks/coucou.json` (`%USERPROFILE%\.copilot\hooks\coucou.json` sur Windows, ou `$COPILOT_HOME/hooks/coucou.json`). VS Code et le CLI Copilot chargent ce dossier. `--agent copilot` route les deux. `isConfigured` = `HookServer.copilotHooksInstalled()`.
 - Pastilles IA (cloud) : `isConfigured` = clé API dans le Keychain. Pastilles IA locales (Ollama, LM Studio) : `isConfigured` = URL serveur non vide (définie via le bouton **Connect** dans Réglages → Chat). Bouton « Chat with… » → change le fournisseur et ouvre la vue `.prompt`.
 
 ### Carte GitHub (`GitHubPulseCardView`)

@@ -14,6 +14,8 @@ pub const KNOWN_KEYS: &[&str] = &[
     "github-token",
     "gitlab-url",
     "gitlab-token",
+    "azuredevops-url",
+    "azuredevops-token",
     "jenkins-url",
     "jenkins-user",
     "jenkins-token",

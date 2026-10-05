@@ -12,6 +12,14 @@ import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
 import { buildGitlab } from "./gitlab";
+import { buildAzureDevops } from "./azuredevops";
+
+function workspaceTool(task: AgentTask): string {
+  if (task.id === "agent_cursor") return "Cursor";
+  if (task.id === "agent_copilot") return "Copilot";
+  if (task.source === "claudeCode") return "Claude Code";
+  return "n8n";
+}
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -163,6 +171,9 @@ function buildOverview(actions: ViewActions): ViewHost {
     openGitlab() {
       actions.setView("gitlab");
     },
+    openAzure() {
+      actions.setView("azuredevops");
+    },
   };
 
   return {
@@ -182,7 +193,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       // VS Code with a live Claude Code session keeps the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
       const sessionActive =
-        (task?.id === "integration_claude" || task?.id === "agent_cursor") &&
+        (task?.id === "integration_claude" || task?.id === "agent_cursor" || task?.id === "agent_copilot") &&
         (task.state !== "idle" || task.steps.length > 0);
 
       if (task && sessionActive) {
@@ -196,7 +207,7 @@ function buildOverview(actions: ViewActions): ViewHost {
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
-          h("span", { class: "tool", text: task.id === "agent_cursor" ? "Cursor" : task.source === "claudeCode" ? "Claude Code" : "n8n" }),
+          h("span", { class: "tool", text: workspaceTool(task) }),
         );
         if (task.steps.length > 1) {
           who.append(h("span", {
@@ -514,5 +525,6 @@ export function buildViews(
   map.set("searching", buildPlaceholder(t("search.busy"), ""));
   map.set("result", buildPlaceholder(t("search.result"), ""));
   map.set("gitlab", buildGitlab(() => actions.setView(State.defaultView())));
+  map.set("azuredevops", buildAzureDevops(() => actions.setView(State.defaultView())));
   return map;
 }

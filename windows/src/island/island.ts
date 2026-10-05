@@ -6,11 +6,11 @@ import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
-  islandSize,
+  islandSize, isWideBrowse,
   type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 import { BotEngine, hexToRGB } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
@@ -19,6 +19,18 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+
+/** IDE sessions open VS Code. The Copilot app opens in a terminal, and falls back to VS Code. */
+function openCopilot(task: AgentTask) {
+  const cwd = task.sessionCwd ?? null;
+  if (task.sessionHost === "ide") {
+    void Bridge.openInVSCode(cwd);
+    return;
+  }
+  void Bridge.openCopilot(cwd).then((opened) => {
+    if (!opened) void Bridge.openInVSCode(cwd);
+  });
+}
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -150,8 +162,13 @@ export class Island {
         };
         if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
         else if (task.id === "agent_cursor") void Bridge.openCursor(task.sessionCwd ?? null);
+        else if (task.id === "agent_copilot") void openCopilot(task);
         else if (task.id === "integration_gitlab") {
           const url = State.integrations.integration_gitlab?.data?.webUrl;
+          if (typeof url === "string") void Bridge.openUrl(url);
+        }
+        else if (task.id === "integration_azuredevops") {
+          const url = State.integrations.integration_azuredevops?.data?.webUrl;
           if (typeof url === "string") void Bridge.openUrl(url);
         }
         else if (task.id === "integration_jenkins") {
@@ -326,11 +343,11 @@ export class Island {
 
   setView(view: IslandViewName) {
     this.stopSequenceIfLeaving(view);
-    const wasBrowsing = State.view === "gitlab";
+    const wasBrowsing = isWideBrowse(State.view);
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
       State.view = view;
-      if (view === "gitlab") this.holdBrowse(true);
+      if (isWideBrowse(view)) this.holdBrowse(true);
       else if (wasBrowsing) this.holdBrowse(false);
       this.animateGeometry(false);
       State.notify();
@@ -339,14 +356,14 @@ export class Island {
     const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
     State.view = view;
     State.lastActivity = performance.now();
-    if (view === "gitlab") this.holdBrowse(true);
+    if (isWideBrowse(view)) this.holdBrowse(true);
     else if (wasBrowsing) this.holdBrowse(false);
     this.animateGeometry(!grew);
     State.notify();
   }
 
   /**
-   * The GitLab browser is a place you read, not a card you glance at. While it
+   * A repository browser is a place you read, not a card you glance at. While it
    * is open the island must not fold itself when the pointer leaves.
    */
   private holdBrowse(on: boolean) {
@@ -593,7 +610,7 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && (State.view === "gitlab" || !State.isPinned)) {
+      if (e.key === "Escape" && State.mode === "expanded" && (isWideBrowse(State.view) || !State.isPinned)) {
         if (this.views.get(State.view)?.escape?.()) return;
         this.collapse();
       }
@@ -801,13 +818,13 @@ export class Island {
     this.botSize.target = p.diameter / 0.6;
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
-    const browsing = State.mode === "expanded" && State.view === "gitlab";
+    const browsing = State.mode === "expanded" && isWideBrowse(State.view);
     // The drop canvas draws its own Mochi; two of them would overlap.
-    // The GitLab browser uses the whole panel, so Mochi steps aside.
+    // A repository browser uses the whole panel, so Mochi steps aside.
     const visible = p.opacity > 0 && !greetingActive && !browsing && !this.uploadActive;
     this.botCanvas.style.opacity = visible ? "1" : "0";
 
-    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && State.view !== "gitlab" && !this.uploadActive) {
+    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !isWideBrowse(State.view) && !this.uploadActive) {
       const d = p.diameter;
       const color = botGlowColor(State.effectiveState);
       this.botGlow.style.display = "block";

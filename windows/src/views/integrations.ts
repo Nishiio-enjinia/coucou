@@ -60,7 +60,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const error = info?.error ?? null;
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
-  const workspace = task.id === "integration_claude" || task.id === "agent_cursor";
+  const workspace = task.id === "integration_claude" || task.id === "agent_cursor" || task.id === "agent_copilot";
   const missing = workspace ? t("int.hooksMissing") : t("int.keyMissing");
   const label = error ?? (configured ? t("int.loading") : missing);
   const statusColor = error || !configured ? "#F4505E" : "#22C55E";
@@ -82,6 +82,25 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         style: `color:${task.color}b3`,
         text: t("int.openCursor"),
         onclick: () => void Bridge.openCursor(task.sessionCwd ?? null),
+      }),
+    );
+  } else if (task.id === "agent_copilot") {
+    const inIde = task.sessionHost === "ide";
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}b3`,
+        text: inIde ? t("int.openVSCode") : t("int.openCopilot"),
+        onclick: () => {
+          const cwd = task.sessionCwd ?? null;
+          if (inIde) {
+            void Bridge.openInVSCode(cwd);
+            return;
+          }
+          void Bridge.openCopilot(cwd).then((opened) => {
+            if (!opened) void Bridge.openInVSCode(cwd);
+          });
+        },
       }),
     );
   } else if (task.id === "integration_n8n") {
@@ -341,6 +360,76 @@ function gitlabCard(onBrowse: () => void): HTMLElement {
   return h("div", { class: "int-card" }, head, rows);
 }
 
+const ADO_PIPELINE = ["success", "failed", "running", "pending", "canceled", "canceling", "partial", "skipped", "other"];
+const ADO_BUGS = ["New", "Active", "Resolved", "Closed", "Approved"];
+
+function adoStatusLabel(status: string): string {
+  if (ADO_PIPELINE.includes(status)) return t(`ado.status.${status}`);
+  if (ADO_BUGS.includes(status)) return t(`ado.bug.${status}`);
+  return status;
+}
+
+function adoAccent(event: Record<string, unknown>): string {
+  const status = String(event.status ?? "");
+  if (event.failure || status === "failed") return "#F4505E";
+  if (status === "success") return "#22C55E";
+  if (status === "partial") return "#F5A524";
+  if (status === "running" || status === "pending") return "#3B9EFF";
+  if (event.kind === "bug") return "#F5A524";
+  return "#0078D4";
+}
+
+function adoLabel(event: Record<string, unknown>): string {
+  const project = String(event.project ?? "");
+  const title = String(event.title ?? "").trim();
+  const kind = String(event.kind ?? "");
+  const iid = typeof event.iid === "number" ? String(event.iid) : "";
+  const head = kind === "bug" && iid ? `${project}#${iid}` : project;
+  return [head, title].filter(Boolean).join(" · ") || t("ado.event");
+}
+
+function azureCard(onBrowse: () => void): HTMLElement {
+  const events = arr("integration_azuredevops", "events");
+  const running = events.filter((event) => event.kind === "pipeline" && event.status === "running").length;
+  const rows = h("div", { class: "int-rows" });
+  if (events.length === 0) {
+    rows.append(h("div", { class: "int-empty", text: t("ado.empty") }));
+  }
+  events.slice(0, 3).forEach((event, i) => {
+    const accent = adoAccent(event);
+    const status = String(event.status ?? "");
+    const bits: Node[] = [h("span", { class: "int-name", text: adoLabel(event) })];
+    if (status) bits.push(h("span", { class: "int-ago", style: `color:${accent}`, text: adoStatusLabel(status) }));
+    bits.push(h("span", { class: "int-ago", text: timeAgo(event.createdAt) }));
+    const row = listRow(accent, i === 0, ...bits);
+    const url = event.url;
+    if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => void Bridge.openUrl(url));
+    }
+    rows.append(row);
+  });
+  const browse = h(
+    "button",
+    {
+      class: "int-more",
+      title: t("ado.browse"),
+      onclick: (event) => {
+        event.stopPropagation();
+        onBrowse();
+      },
+    },
+    svg(ICONS.chevronRight, 10, { stroke: 2.4 }),
+  );
+  browse.style.marginLeft = "auto";
+  const kind = running > 0 ? t("ado.live", { n: running }) : t("ado.kind");
+  const head = header("#0078D4", "Azure DevOps", kind, browse);
+  head.title = t("ado.browse");
+  head.style.cursor = "pointer";
+  head.addEventListener("click", onBrowse);
+  return h("div", { class: "int-card" }, head, rows);
+}
+
 // ── Stripe ────────────────────────────────────────────────────────────────────
 
 function stripeCard(): HTMLElement {
@@ -492,6 +581,7 @@ export interface IntegrationCardHooks {
   closeDetail(): void;
   openSettings(): void;
   openGitlab(): void;
+  openAzure(): void;
 }
 
 /** True when this integration has data worth showing instead of the idle card. */
@@ -506,6 +596,8 @@ export function hasIntegrationData(id: string): boolean {
     case "integration_github":
       return get(id).totalRepos != null;
     case "integration_gitlab":
+      return info.loaded;
+    case "integration_azuredevops":
       return info.loaded;
     case "integration_jenkins":
       return info.loaded;
@@ -539,6 +631,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return githubCard();
     case "integration_gitlab":
       return gitlabCard(hooks.openGitlab);
+    case "integration_azuredevops":
+      return azureCard(hooks.openAzure);
     case "integration_jenkins":
       return jenkinsCard();
     case "integration_stripe":

@@ -49,6 +49,7 @@ async function main() {
 
   const keys = [
     "stripe-api-key", "github-token", "gitlab-url", "gitlab-token",
+    "azuredevops-url", "azuredevops-token",
     "jenkins-url", "jenkins-user", "jenkins-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
   ];
@@ -97,6 +98,7 @@ function renderDiff(text: string): HTMLElement {
 const IDE_LABEL: Record<IdeStatus["id"], string> = {
   claude: "Claude Code",
   cursor: "Cursor",
+  copilot: "GitHub Copilot",
 };
 
 function idesSection(): HTMLElement {
@@ -486,6 +488,11 @@ function integrationDefs(): IntegrationDef[] {
       { key: "gitlab-url", label: t("int.instanceUrl"), placeholder: "https://gitlab.com", secret: false },
       { key: "gitlab-token", label: t("int.token"), placeholder: "glpat-…", secret: true },
     ] },
+  { id: "integration_azuredevops", name: "Azure DevOps", color: "#0078D4",
+    fields: [
+      { key: "azuredevops-url", label: t("int.instanceUrl"), placeholder: "https://dev.azure.com/my-org", secret: false },
+      { key: "azuredevops-token", label: t("int.token"), placeholder: "PAT", secret: true },
+    ] },
   { id: "integration_jenkins", name: "Jenkins", color: "#D33833",
     fields: [
       { key: "jenkins-url", label: t("int.instanceUrl"), placeholder: "https://jenkins.example.com", secret: false },
@@ -567,6 +574,9 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     }
     if (def.id === "integration_gitlab") {
       rows.append(h("div", { class: "hint", text: t("int.gitlabHint") }));
+    }
+    if (def.id === "integration_azuredevops") {
+      rows.append(h("div", { class: "hint", text: t("int.azuredevopsHint") }));
     }
     if (def.id === "integration_jenkins") {
       rows.append(h("div", { class: "hint", text: t("int.jenkinsHint") }));

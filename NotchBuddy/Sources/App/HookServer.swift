@@ -348,18 +348,24 @@ final class HookServer: @unchecked Sendable {
 
         // Routing:
         // • "codex" → agent_codex (GitHub build only: workspace pill, approvals in the notch)
+        // • "copilot" → agent_copilot (IDE and Copilot app share one pill)
         // • other valid coucou_agent → external pill (fire-and-forget, no approval card)
         // • Cursor bundle ID → agent_cursor
         // • VS Code → integration_claude
         #if !APPSTORE
         let isCodexEvent = rawAgent == "codex"
+        let isCopilotEvent = rawAgent == "copilot"
         #else
         let isCodexEvent = false
+        let isCopilotEvent = false
         #endif
         let agentId: String
         let isExternalAgent: Bool
         if isCodexEvent {
             agentId = "agent_codex"
+            isExternalAgent = false
+        } else if isCopilotEvent {
+            agentId = "agent_copilot"
             isExternalAgent = false
         } else if let agent = validAgent {
             agentId = "agent_\(agent)"
@@ -382,9 +388,10 @@ final class HookServer: @unchecked Sendable {
         if let pending = state.pendingApproval, agentId == pending.pillId {
             let handledNote: String
             switch pending.pillId {
-            case "agent_cursor": handledNote = "Handled in Cursor."
-            case "agent_codex":  handledNote = "Handled in Codex."
-            default:             handledNote = "Handled in VS Code."
+            case "agent_cursor":  handledNote = "Handled in Cursor."
+            case "agent_codex":   handledNote = "Handled in Codex."
+            case "agent_copilot": handledNote = "Handled in Copilot."
+            default:              handledNote = "Handled in VS Code."
             }
             var resolved = false
             switch name {
@@ -1847,6 +1854,132 @@ final class HookServer: @unchecked Sendable {
                                          options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     }
 
+    // MARK: - Copilot hook installer (IDE + Copilot app, #if !APPSTORE only)
+
+    /// User-level file. Copilot in VS Code and the Copilot app both load every JSON file here.
+    static var copilotHooksURL: URL {
+        let home = ProcessInfo.processInfo.environment["COPILOT_HOME"]
+        let base: URL
+        if let home, !home.isEmpty {
+            base = URL(fileURLWithPath: home, isDirectory: true)
+        } else {
+            base = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".copilot")
+        }
+        return base.appendingPathComponent("hooks/coucou.json")
+    }
+
+    static func copilotHooksInstalled() -> Bool {
+        guard let data = try? Data(contentsOf: copilotHooksURL),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let hooks = root["hooks"] as? [String: Any] else { return false }
+        for value in hooks.values {
+            guard let entries = value as? [[String: Any]] else { continue }
+            if entries.contains(where: copilotEntryIsOurs) { return true }
+        }
+        return false
+    }
+
+    private static func copilotEntryIsOurs(_ entry: [String: Any]) -> Bool {
+        for key in ["bash", "powershell", "command"] {
+            if let cmd = entry[key] as? String,
+               cmd.contains("nb-hook"), cmd.contains("--agent copilot") { return true }
+        }
+        if let inner = entry["hooks"] as? [[String: Any]] {
+            return inner.contains(where: copilotEntryIsOurs)
+        }
+        return false
+    }
+
+    private var _pendingCopilotData: Data?
+    private var _pendingCopilotFingerprint: String?
+
+    func previewCopilotHooks(install: Bool) throws -> String {
+        let url = Self.copilotHooksURL
+        let exists = FileManager.default.fileExists(atPath: url.path)
+        if !install && !exists {
+            throw NSError(domain: "CoucouNoop", code: 0, userInfo: [
+                NSLocalizedDescriptionKey: "No Copilot hooks to remove."
+            ])
+        }
+        let current = exists ? try Data(contentsOf: url) : Data()
+        _pendingCopilotFingerprint = sha256Hex(current)
+        let newData = install ? try buildCopilotHooksData() : try withoutCopilotHooks()
+        _pendingCopilotData = newData
+        return String(data: newData, encoding: .utf8) ?? ""
+    }
+
+    func writeCopilotHooks() throws {
+        guard let data = _pendingCopilotData, let fp = _pendingCopilotFingerprint else { return }
+        let url = Self.copilotHooksURL
+        let current = (try? Data(contentsOf: url)) ?? Data()
+        guard sha256Hex(current) == fp else {
+            throw NSError(domain: "Coucou", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Copilot hooks changed since preview. Refresh and try again."
+            ])
+        }
+        try writeJSONFile(data, to: url, suffix: "coucou.json")
+        _pendingCopilotData = nil
+        _pendingCopilotFingerprint = nil
+    }
+
+    private func buildCopilotHooksData() throws -> Data {
+        let label = "~/.copilot/hooks/coucou.json"
+        var root = try Self.strictReadJSONObject(at: Self.copilotHooksURL, label: label)
+        if root["version"] == nil { root["version"] = 1 }
+        if let raw = root["hooks"], !(raw is [String: Any]) {
+            throw NSError(domain: "Coucou", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(label): \"hooks\" has an unexpected type — Coucou has not touched it."
+            ])
+        }
+        let events = [
+            "sessionStart", "sessionEnd", "userPromptSubmitted",
+            "preToolUse", "postToolUse", "postToolUseFailure",
+            "agentStop", "subagentStart", "subagentStop", "errorOccurred",
+        ]
+        var hooks = root["hooks"] as? [String: Any] ?? [:]
+        let commandBase = "\(hookBase()) --agent copilot"
+        for event in events {
+            if let raw = hooks[event], !(raw is [[String: Any]]) {
+                throw NSError(domain: "Coucou", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "\(label): \"hooks\"[\"\(event)\"] has an unexpected type — Coucou has not touched it."
+                ])
+            }
+            var entries = hooks[event] as? [[String: Any]] ?? []
+            entries.removeAll(where: Self.copilotEntryIsOurs)
+            entries.append([
+                "type": "command",
+                "bash": "\(commandBase) \(event)",
+                "powershell": "\(commandBase) \(event)",
+                "timeoutSec": 10,
+            ])
+            hooks[event] = entries
+        }
+        root["hooks"] = hooks
+        return try JSONSerialization.data(withJSONObject: root,
+                                         options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private func withoutCopilotHooks() throws -> Data {
+        let label = "~/.copilot/hooks/coucou.json"
+        var root = try Self.strictReadJSONObject(at: Self.copilotHooksURL, label: label)
+        if let raw = root["hooks"], !(raw is [String: Any]) {
+            throw NSError(domain: "Coucou", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "\(label): \"hooks\" has an unexpected type — Coucou has not touched it."
+            ])
+        }
+        if var hooks = root["hooks"] as? [String: Any] {
+            for key in hooks.keys {
+                if let entries = hooks[key] as? [[String: Any]] {
+                    let cleaned = entries.filter { !Self.copilotEntryIsOurs($0) }
+                    if cleaned.isEmpty { hooks.removeValue(forKey: key) } else { hooks[key] = cleaned }
+                }
+            }
+            if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+        }
+        return try JSONSerialization.data(withJSONObject: root,
+                                         options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
     // MARK: SHA-256 fingerprint
 
     private func sha256Hex(_ data: Data) -> String {
@@ -1897,11 +2030,11 @@ def normalize_event(name):
         'startup': 'SessionStart', 'exit': 'SessionEnd',
         'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
         'sessionStart': 'SessionStart', 'sessionEnd': 'SessionEnd',
-        'beforeSubmitPrompt': 'UserPromptSubmit',
+        'beforeSubmitPrompt': 'UserPromptSubmit', 'userPromptSubmitted': 'UserPromptSubmit',
         'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
         'postToolUseFailure': 'PostToolUseFailure',
         'subagentStart': 'SubagentStart', 'subagentStop': 'SubagentStop',
-        'stop': 'Stop',
+        'stop': 'Stop', 'agentStop': 'Stop',
     }
     return mapping.get(name, name)
 
@@ -1911,12 +2044,23 @@ def normalize_tool_fields(payload):
     tool = payload.get('toolCall')
     if not isinstance(tool, dict):
         tool = {}
-    name = tool.get('name') or payload.get('tool', '')
+    name = tool.get('name') or payload.get('tool') or payload.get('toolName') or ''
+    aliases = {
+        'bash': 'Bash', 'powershell': 'Bash', 'view': 'Read', 'create': 'Write',
+        'edit': 'Edit', 'str_replace_editor': 'Edit', 'apply_patch': 'Edit',
+        'grep': 'Grep', 'rg': 'Grep', 'glob': 'Glob', 'web_fetch': 'WebFetch',
+        'web_search': 'WebSearch', 'ask_user': 'AskUserQuestion',
+        'update_todo': 'TodoWrite', 'task': 'Agent',
+    }
     if name:
-        payload['tool_name'] = name
-    if 'tool_input' not in payload and isinstance(tool.get('args'), dict):
-        flat = dict(tool['args'])
-        for src, dst in [('CommandLine', 'command'), ('FilePath', 'file_path'),
+        payload['tool_name'] = aliases.get(name, name)
+    raw_args = tool.get('args') if isinstance(tool.get('args'), dict) else None
+    if raw_args is None and isinstance(payload.get('toolArgs'), dict):
+        raw_args = payload.get('toolArgs')
+    if 'tool_input' not in payload and isinstance(raw_args, dict):
+        flat = dict(raw_args)
+        for src, dst in [('CommandLine', 'command'), ('commandLine', 'command'),
+                         ('filePath', 'file_path'), ('FilePath', 'file_path'),
                          ('Path', 'path'), ('Url', 'url'), ('Query', 'query'), ('Pattern', 'pattern')]:
             if src in flat:
                 flat[dst] = flat[src]
@@ -2065,7 +2209,9 @@ def main():
     # Normalize event name and tool fields (Gemini CLI / Antigravity → canonical names)
     try:
         raw_event = payload.get('hook_event_name', '') or arg_event
-        if raw_event:
+        if raw_event in ('errorOccurred', 'ErrorOccurred') and payload.get('recoverable') is not True:
+            payload['hook_event_name'] = 'StopFailure'
+        elif raw_event:
             payload['hook_event_name'] = normalize_event(raw_event)
         normalize_tool_fields(payload)
     except Exception:
@@ -2170,11 +2316,11 @@ def normalize_event(name):
         'startup': 'SessionStart', 'exit': 'SessionEnd',
         'PreInvocation': 'UserPromptSubmit', 'PostInvocation': 'PostToolUse',
         'sessionStart': 'SessionStart', 'sessionEnd': 'SessionEnd',
-        'beforeSubmitPrompt': 'UserPromptSubmit',
+        'beforeSubmitPrompt': 'UserPromptSubmit', 'userPromptSubmitted': 'UserPromptSubmit',
         'preToolUse': 'PreToolUse', 'postToolUse': 'PostToolUse',
         'postToolUseFailure': 'PostToolUseFailure',
         'subagentStart': 'SubagentStart', 'subagentStop': 'SubagentStop',
-        'stop': 'Stop',
+        'stop': 'Stop', 'agentStop': 'Stop',
     }
     return mapping.get(name, name)
 
@@ -2184,12 +2330,23 @@ def normalize_tool_fields(payload):
     tool = payload.get('toolCall')
     if not isinstance(tool, dict):
         tool = {}
-    name = tool.get('name') or payload.get('tool', '')
+    name = tool.get('name') or payload.get('tool') or payload.get('toolName') or ''
+    aliases = {
+        'bash': 'Bash', 'powershell': 'Bash', 'view': 'Read', 'create': 'Write',
+        'edit': 'Edit', 'str_replace_editor': 'Edit', 'apply_patch': 'Edit',
+        'grep': 'Grep', 'rg': 'Grep', 'glob': 'Glob', 'web_fetch': 'WebFetch',
+        'web_search': 'WebSearch', 'ask_user': 'AskUserQuestion',
+        'update_todo': 'TodoWrite', 'task': 'Agent',
+    }
     if name:
-        payload['tool_name'] = name
-    if 'tool_input' not in payload and isinstance(tool.get('args'), dict):
-        flat = dict(tool['args'])
-        for src, dst in [('CommandLine', 'command'), ('FilePath', 'file_path'),
+        payload['tool_name'] = aliases.get(name, name)
+    raw_args = tool.get('args') if isinstance(tool.get('args'), dict) else None
+    if raw_args is None and isinstance(payload.get('toolArgs'), dict):
+        raw_args = payload.get('toolArgs')
+    if 'tool_input' not in payload and isinstance(raw_args, dict):
+        flat = dict(raw_args)
+        for src, dst in [('CommandLine', 'command'), ('commandLine', 'command'),
+                         ('filePath', 'file_path'), ('FilePath', 'file_path'),
                          ('Path', 'path'), ('Url', 'url'), ('Query', 'query'), ('Pattern', 'pattern')]:
             if src in flat:
                 flat[dst] = flat[src]
@@ -2337,7 +2494,9 @@ def main():
     # Normalize event name and tool fields (Gemini CLI / Antigravity → canonical names)
     try:
         raw_event = payload.get('hook_event_name', '') or arg_event
-        if raw_event:
+        if raw_event in ('errorOccurred', 'ErrorOccurred') and payload.get('recoverable') is not True:
+            payload['hook_event_name'] = 'StopFailure'
+        elif raw_event:
             payload['hook_event_name'] = normalize_event(raw_event)
         normalize_tool_fields(payload)
     except Exception:

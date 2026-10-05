@@ -25,6 +25,8 @@ interface HookPayload {
   tool_input?: Record<string, unknown>;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
+  vscode_pid?: string;
+  term_program?: string;
 }
 
 /** Same rule as HookServer.validateAgent on macOS. "claude" is reserved. */
@@ -39,6 +41,7 @@ const FALLBACK_COLORS = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"];
 /** Catalog agents keep their name, color, and the pill after the session ends. */
 const KNOWN_AGENTS: Record<string, { name: string; color: string; persist: boolean }> = {
   cursor: { name: "Cursor", color: "#C0C4CC", persist: true },
+  copilot: { name: "Copilot", color: "#3B82F6", persist: true },
 };
 
 function agentLook(name: string): { name: string; color: string; persist: boolean } {
@@ -72,6 +75,8 @@ function lastPathComponent(p: string): string {
 /** frenchStep() — same labels as the macOS app. */
 const TOOL_LABELS: Record<string, string> = {
   Bash: "Exécute",
+  bash: "Exécute",
+  powershell: "Exécute",
   Shell: "Exécute",
   Read: "Lit",
   Write: "Écrit",
@@ -194,6 +199,11 @@ function handleHook(island: Island, payload: HookPayload) {
         task.name = look.name;
         task.color = look.color;
         if (cwd) task.sessionCwd = cwd;
+        if (validAgent === "copilot") {
+          const ide = Boolean(payload.vscode_pid)
+            || (payload.term_program ?? "").toLowerCase().includes("vscode");
+          task.sessionHost = ide ? "ide" : "cli";
+        }
       }
     } else {
       upsert(projectName, cwd);

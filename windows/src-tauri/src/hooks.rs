@@ -47,6 +47,21 @@ const CURSOR_EVENTS: &[&str] = &[
     "stop",
 ];
 
+/// Copilot CLI and Copilot in the IDE share this spelling. One file feeds both.
+/// `userPromptTransformed` is left out: it fires on every rewrite and would flood the island.
+const COPILOT_EVENTS: &[&str] = &[
+    "sessionStart",
+    "sessionEnd",
+    "userPromptSubmitted",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "agentStop",
+    "subagentStart",
+    "subagentStop",
+    "errorOccurred",
+];
+
 /// Marker that identifies a Coucou entry inside settings.json.
 const MARKER: &str = "coucou-hook";
 
@@ -348,6 +363,7 @@ pub fn write(install: bool, fingerprint: &str) -> Result<String, String> {
 enum Ide {
     Claude,
     Cursor,
+    Copilot,
 }
 
 impl Ide {
@@ -355,6 +371,7 @@ impl Ide {
         match id {
             "claude" => Ok(Self::Claude),
             "cursor" => Ok(Self::Cursor),
+            "copilot" => Ok(Self::Copilot),
             _ => Err(format!("Unknown IDE \"{id}\".")),
         }
     }
@@ -363,6 +380,7 @@ impl Ide {
         match self {
             Self::Claude => "claude",
             Self::Cursor => "cursor",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -370,8 +388,22 @@ impl Ide {
         match self {
             Self::Claude => settings_path(),
             Self::Cursor => platform::home_dir().join(".cursor").join("hooks.json"),
+            Self::Copilot => copilot_hooks_path(),
         }
     }
+}
+
+/// User-level hooks. Copilot CLI and VS Code both load every JSON file here.
+fn copilot_hooks_path() -> PathBuf {
+    if let Some(home) = std::env::var_os("COPILOT_HOME") {
+        if !home.is_empty() {
+            return PathBuf::from(home).join("hooks").join("coucou.json");
+        }
+    }
+    platform::home_dir()
+        .join(".copilot")
+        .join("hooks")
+        .join("coucou.json")
 }
 
 #[derive(Serialize)]
@@ -528,6 +560,134 @@ fn cursor_without_ours(existing: &Value) -> Result<Value, String> {
     Ok(Value::Object(root))
 }
 
+/// `bash` is what macOS, Linux and Git Bash run. `powershell` is what the
+/// Copilot app and VS Code run on Windows. The relay translates the event name.
+fn copilot_shells(event: &str) -> (String, String) {
+    let exe = settings::hook_exe_path();
+    #[cfg(windows)]
+    {
+        let native = format!("\"{}\" --agent copilot {event}", exe.to_string_lossy());
+        let bash = format!(
+            "\"{}\" --agent copilot {event}",
+            exe.to_string_lossy().replace('\\', "/")
+        );
+        (bash, native)
+    }
+    #[cfg(unix)]
+    {
+        let bash = format!(
+            "{} --agent copilot {event}",
+            sh_quote(&exe.to_string_lossy())
+        );
+        (bash.clone(), bash)
+    }
+}
+
+fn copilot_entry_is_ours(entry: &Value) -> bool {
+    ["bash", "powershell", "command"].iter().any(|key| {
+        entry
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(|c| c.contains(MARKER) && c.contains("--agent copilot"))
+            .unwrap_or(false)
+    }) || entry
+        .get("hooks")
+        .and_then(Value::as_array)
+        .map(|hooks| hooks.iter().any(copilot_entry_is_ours))
+        .unwrap_or(false)
+}
+
+fn copilot_installed(root: &Value) -> bool {
+    root.get("hooks")
+        .and_then(Value::as_object)
+        .map(|hooks| {
+            hooks
+                .values()
+                .filter_map(Value::as_array)
+                .flatten()
+                .any(copilot_entry_is_ours)
+        })
+        .unwrap_or(false)
+}
+
+fn copilot_merged(existing: &Value) -> Result<Value, String> {
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    if !root.contains_key("version") {
+        root.insert("version".into(), json!(1));
+    }
+    if let Some(raw) = root.get("hooks") {
+        if !raw.is_object() {
+            return Err(
+                "coucou.json: \"hooks\" has an unexpected type — Coucou has not touched it.".into(),
+            );
+        }
+    }
+    let mut hooks = root
+        .get("hooks")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_else(Map::new);
+
+    for event in COPILOT_EVENTS {
+        if let Some(raw) = hooks.get(*event) {
+            if !raw.is_array() {
+                return Err(format!(
+                    "coucou.json: \"hooks\".\"{event}\" has an unexpected type — Coucou has not touched it."
+                ));
+            }
+        }
+        let mut list = hooks
+            .get(*event)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        list.retain(|entry| !copilot_entry_is_ours(entry));
+        let (bash, powershell) = copilot_shells(event);
+        list.push(json!({
+            "type": "command",
+            "bash": bash,
+            "powershell": powershell,
+            "timeoutSec": 10,
+        }));
+        hooks.insert((*event).to_string(), Value::Array(list));
+    }
+    root.insert("hooks".into(), Value::Object(hooks));
+    Ok(Value::Object(root))
+}
+
+fn copilot_without_ours(existing: &Value) -> Result<Value, String> {
+    let mut root = existing.as_object().cloned().unwrap_or_default();
+    let Some(hooks) = root.get("hooks").and_then(Value::as_object).cloned() else {
+        return Ok(Value::Object(root));
+    };
+    let mut out = Map::new();
+    for (event, value) in hooks {
+        match value.as_array() {
+            Some(list) => {
+                let kept: Vec<Value> = list
+                    .iter()
+                    .filter(|e| !copilot_entry_is_ours(e))
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    out.insert(event, Value::Array(kept));
+                }
+            }
+            None => {
+                return Err(format!(
+                    "coucou.json: \"hooks\".\"{event}\" has an unexpected type — Coucou has not touched it."
+                ));
+            }
+        }
+    }
+    if out.is_empty() {
+        root.remove("hooks");
+    } else {
+        root.insert("hooks".into(), Value::Object(out));
+    }
+    Ok(Value::Object(root))
+}
+
 fn claude_installed(root: &Value) -> bool {
     root.get("hooks")
         .and_then(Value::as_object)
@@ -551,6 +711,13 @@ fn next_for(ide: Ide, current: &Value, install: bool) -> Result<Value, String> {
                 cursor_without_ours(current)
             }
         }
+        Ide::Copilot => {
+            if install {
+                copilot_merged(current)
+            } else {
+                copilot_without_ours(current)
+            }
+        }
     }
 }
 
@@ -558,7 +725,7 @@ pub fn ides_status() -> Vec<IdeStatus> {
     let hook_path = settings::hook_exe_path();
     let ready = hook_path.exists();
     let hook_path = hook_path.to_string_lossy().to_string();
-    [Ide::Claude, Ide::Cursor]
+    [Ide::Claude, Ide::Cursor, Ide::Copilot]
         .into_iter()
         .map(|ide| {
             let path = ide.path();
@@ -567,6 +734,7 @@ pub fn ides_status() -> Vec<IdeStatus> {
                 .map(|root| match ide {
                     Ide::Claude => claude_installed(&root),
                     Ide::Cursor => cursor_installed(&root),
+                    Ide::Copilot => copilot_installed(&root),
                 })
                 .unwrap_or(false);
             IdeStatus {
@@ -942,6 +1110,38 @@ mod tests {
 
         let bad = json!({ "hooks": { "preToolUse": "nope" } });
         assert!(cursor_merged(&bad).is_err());
+    }
+
+    #[test]
+    fn copilot_merge_keeps_foreign_commands_and_removal_drops_only_ours() {
+        let existing = json!({
+            "version": 1,
+            "hooks": {
+                "preToolUse": [{ "type": "command", "bash": "someone-else.sh", "timeoutSec": 5 }],
+                "sessionEnd": [{ "type": "command", "powershell": "keep.ps1" }]
+            }
+        });
+        let after = copilot_merged(&existing).expect("merge");
+        let pre = after["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre[0]["bash"], "someone-else.sh");
+        assert!(pre[1]["bash"].as_str().unwrap().contains("--agent copilot"));
+        assert!(pre[1]["powershell"].as_str().unwrap().contains("--agent copilot"));
+        assert_eq!(pre[1]["timeoutSec"], 10);
+        assert!(after["hooks"]["sessionStart"].is_array());
+        assert!(after["hooks"]["userPromptSubmitted"].is_array());
+        assert_eq!(after["version"], 1);
+        assert!(copilot_installed(&after));
+
+        let cleaned = copilot_without_ours(&after).expect("clean");
+        assert_eq!(cleaned["hooks"]["preToolUse"][0]["bash"], "someone-else.sh");
+        assert_eq!(cleaned["hooks"]["sessionEnd"].as_array().unwrap().len(), 1);
+        assert_eq!(cleaned["hooks"]["sessionEnd"][0]["powershell"], "keep.ps1");
+        assert!(cleaned["hooks"].get("sessionStart").is_none());
+        assert!(cleaned["hooks"].get("userPromptSubmitted").is_none());
+        assert!(!copilot_installed(&cleaned));
+
+        let bad = json!({ "hooks": { "preToolUse": "nope" } });
+        assert!(copilot_merged(&bad).is_err());
     }
 
     #[test]
