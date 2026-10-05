@@ -241,6 +241,51 @@ function githubCard(): HTMLElement {
   );
 }
 
+const JENKINS_PHASE: Record<string, string> = {
+  building: "#F29B38",
+  queued: "#8C8C8C",
+  success: "#22C55E",
+  failure: "#F4505E",
+  unstable: "#F5A524",
+  aborted: "#6B7079",
+};
+
+function jenkinsPhaseLabel(phase: string): string {
+  const key = `jenkins.${phase}`;
+  const label = t(key);
+  return label === key ? phase : label;
+}
+
+function jenkinsCard(): HTMLElement {
+  const info = get("integration_jenkins");
+  const builds = arr("integration_jenkins", "builds");
+  const running = Number(info.running ?? 0);
+  const kind = running > 0 ? t("jenkins.live", { n: running }) : t("jenkins.kind");
+  const rows = h("div", { class: "int-rows tight" });
+  if (builds.length === 0) {
+    rows.append(h("div", { class: "int-empty", text: t("jenkins.empty") }));
+  }
+  builds.slice(0, 4).forEach((build, i) => {
+    const phase = String(build.phase ?? "");
+    const accent = JENKINS_PHASE[phase] ?? "#D33833";
+    const number = typeof build.number === "number" ? ` #${build.number}` : "";
+    const row = listRow(
+      accent,
+      i === 0,
+      h("span", { class: "int-name", text: `${String(build.name ?? "")}${number}` }),
+      h("span", { class: "int-ago", style: `color:${accent}`, text: jenkinsPhaseLabel(phase) }),
+      h("span", { class: "int-ago", text: timeAgo(build.timestamp) }),
+    );
+    const url = build.url;
+    if (typeof url === "string" && (url.startsWith("https://") || url.startsWith("http://"))) {
+      row.style.cursor = "pointer";
+      row.addEventListener("click", () => void Bridge.openUrl(url));
+    }
+    rows.append(row);
+  });
+  return h("div", { class: "int-card" }, header("#D33833", "Jenkins", kind), rows);
+}
+
 function gitlabLabel(event: Record<string, unknown>): string {
   const project = String(event.project ?? "").split("/").filter(Boolean).pop() ?? "";
   const title = String(event.title ?? "").trim();
@@ -255,7 +300,7 @@ function gitlabLabel(event: Record<string, unknown>): string {
   return [head, title].filter(Boolean).join(" · ") || t("gitlab.event");
 }
 
-function gitlabCard(): HTMLElement {
+function gitlabCard(onBrowse: () => void): HTMLElement {
   const events = arr("integration_gitlab", "events");
   const rows = h("div", { class: "int-rows" });
   if (events.length === 0) {
@@ -276,7 +321,24 @@ function gitlabCard(): HTMLElement {
     }
     rows.append(row);
   });
-  return h("div", { class: "int-card" }, header("#E24329", "GitLab", t("gitlab.kind")), rows);
+  const browse = h(
+    "button",
+    {
+      class: "int-more",
+      title: t("gitlab.browse"),
+      onclick: (event) => {
+        event.stopPropagation();
+        onBrowse();
+      },
+    },
+    svg(ICONS.chevronRight, 10, { stroke: 2.4 }),
+  );
+  browse.style.marginLeft = "auto";
+  const head = header("#E24329", "GitLab", t("gitlab.kind"), browse);
+  head.title = t("gitlab.browse");
+  head.style.cursor = "pointer";
+  head.addEventListener("click", onBrowse);
+  return h("div", { class: "int-card" }, head, rows);
 }
 
 // ── Stripe ────────────────────────────────────────────────────────────────────
@@ -429,6 +491,7 @@ export interface IntegrationCardHooks {
   openDetail(): void;
   closeDetail(): void;
   openSettings(): void;
+  openGitlab(): void;
 }
 
 /** True when this integration has data worth showing instead of the idle card. */
@@ -443,6 +506,8 @@ export function hasIntegrationData(id: string): boolean {
     case "integration_github":
       return get(id).totalRepos != null;
     case "integration_gitlab":
+      return info.loaded;
+    case "integration_jenkins":
       return info.loaded;
     case "integration_stripe":
       return info.loaded;
@@ -473,7 +538,9 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
     case "integration_github":
       return githubCard();
     case "integration_gitlab":
-      return gitlabCard();
+      return gitlabCard(hooks.openGitlab);
+    case "integration_jenkins":
+      return jenkinsCard();
     case "integration_stripe":
       return stripeCard();
     case "integration_notion":

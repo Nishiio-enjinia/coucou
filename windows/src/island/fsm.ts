@@ -105,11 +105,10 @@ export class IslandStateMachine {
   // ── Timers ──────────────────────────────────────────────────────────────────
 
   private schedulePetitHide() {
+    // No notch to slip into on a PC: once the compact island is up it stays.
+    // Leaving it, or waiting, must not slide it off the screen. Pause still
+    // calls forceHidden.
     this.clear("petitHide");
-    this.petitHide = window.setTimeout(() => {
-      this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
-    }, this.petitToHiddenDelay * 1000);
   }
 
   private scheduleHomeCollapse() {

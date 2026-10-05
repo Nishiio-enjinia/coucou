@@ -104,6 +104,9 @@ export const Bridge = {
 
   // ── Integrations ──────────────────────────────────────────────────────────
   refreshIntegration: (id: string) => call<void>("refresh_integration", { id }),
+  /** Projects, commits or pipelines. The token never leaves Rust. */
+  gitlabBrowse: (req: GitlabBrowseRequest) =>
+    callOrThrow<GitlabRow[]>("gitlab_browse", { req }),
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 
@@ -111,11 +114,25 @@ export const Bridge = {
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
 };
 
+export interface GitlabBrowseRequest {
+  kind: "projects" | "commits" | "pipelines" | "jobs";
+  projectId?: number;
+  pipelineId?: number;
+  page?: number;
+}
+
+export type GitlabRow = Record<string, unknown>;
+
 export interface IntegrationUpdate {
   id: string;
   data: Record<string, unknown>;
   error: string | null;
-  event: { success: boolean; label: string; detail: string | null } | null;
+  event: {
+    success: boolean;
+    label: string;
+    detail: string | null;
+    phase?: "working" | "finished" | "error" | null;
+  } | null;
 }
 
 export type ChatContext =

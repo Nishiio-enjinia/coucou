@@ -381,6 +381,12 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Projects, commits and pipelines for the full-width GitLab browser.
+#[tauri::command]
+async fn gitlab_browse(req: integrations::GitlabBrowseRequest) -> Result<serde_json::Value, String> {
+    integrations::gitlab_browse(req).await
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -498,6 +504,7 @@ pub fn run() {
             secret_set,
             secret_clear,
             refresh_integration,
+            gitlab_browse,
             open_n8n,
             open_settings_window,
             set_paused,

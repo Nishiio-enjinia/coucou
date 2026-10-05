@@ -69,6 +69,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_vercel", "Vercel", "#7C5CFF", "n8n"),
   task("integration_github", "GitHub", "#F4505E", "n8n"),
   task("integration_gitlab", "GitLab", "#E24329", "n8n"),
+  task("integration_jenkins", "Jenkins", "#D33833", "n8n"),
   task("integration_notion", "Notion", "#8C8C8C", "n8n"),
   task("integration_calcom", "Cal.com", "#C9956A", "n8n"),
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
@@ -76,7 +77,7 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
-  "integration_gitlab", "integration_notion", "integration_calcom", "integration_stripe",
+  "integration_gitlab", "integration_jenkins", "integration_notion", "integration_calcom", "integration_stripe",
 ];
 
 /** What an integration poller last reported. */

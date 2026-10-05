@@ -154,6 +154,10 @@ export class Island {
           const url = State.integrations.integration_gitlab?.data?.webUrl;
           if (typeof url === "string") void Bridge.openUrl(url);
         }
+        else if (task.id === "integration_jenkins") {
+          const url = State.integrations.integration_jenkins?.data?.webUrl;
+          if (typeof url === "string") void Bridge.openUrl(url);
+        }
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
@@ -322,9 +326,12 @@ export class Island {
 
   setView(view: IslandViewName) {
     this.stopSequenceIfLeaving(view);
+    const wasBrowsing = State.view === "gitlab";
     if (State.mode !== "expanded") {
       this.fsm.forceHome();
       State.view = view;
+      if (view === "gitlab") this.holdBrowse(true);
+      else if (wasBrowsing) this.holdBrowse(false);
       this.animateGeometry(false);
       State.notify();
       return;
@@ -332,8 +339,27 @@ export class Island {
     const grew = VIEW_LAYOUTS[view].height >= VIEW_LAYOUTS[State.view].height;
     State.view = view;
     State.lastActivity = performance.now();
+    if (view === "gitlab") this.holdBrowse(true);
+    else if (wasBrowsing) this.holdBrowse(false);
     this.animateGeometry(!grew);
     State.notify();
+  }
+
+  /**
+   * The GitLab browser is a place you read, not a card you glance at. While it
+   * is open the island must not fold itself when the pointer leaves.
+   */
+  private holdBrowse(on: boolean) {
+    if (on) {
+      State.isPinned = true;
+      this.fsm.pinned = true;
+      this.homeCollapseAt = null;
+      if (this.fsm.state === "home") this.fsm.forceHome();
+      return;
+    }
+    State.isPinned = false;
+    this.fsm.pinned = false;
+    if (this.fsm.state === "home" && !this.wasInIsland) this.fsm.mouseLeft();
   }
 
   collapse() {
@@ -567,7 +593,10 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
+      if (e.key === "Escape" && State.mode === "expanded" && (State.view === "gitlab" || !State.isPinned)) {
+        if (this.views.get(State.view)?.escape?.()) return;
+        this.collapse();
+      }
       State.lastActivity = performance.now();
     });
 
@@ -772,11 +801,13 @@ export class Island {
     this.botSize.target = p.diameter / 0.6;
 
     const greetingActive = State.mode === "expanded" && State.view === "greeting";
+    const browsing = State.mode === "expanded" && State.view === "gitlab";
     // The drop canvas draws its own Mochi; two of them would overlap.
-    const visible = p.opacity > 0 && !greetingActive && !this.uploadActive;
+    // The GitLab browser uses the whole panel, so Mochi steps aside.
+    const visible = p.opacity > 0 && !greetingActive && !browsing && !this.uploadActive;
     this.botCanvas.style.opacity = visible ? "1" : "0";
 
-    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
+    if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && State.view !== "gitlab" && !this.uploadActive) {
       const d = p.diameter;
       const color = botGlowColor(State.effectiveState);
       this.botGlow.style.display = "block";

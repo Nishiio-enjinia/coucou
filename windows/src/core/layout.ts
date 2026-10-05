@@ -21,7 +21,8 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
-  | "greeting";
+  | "greeting"
+  | "gitlab";
 
 export type BotStateName =
   | "idle"
@@ -86,6 +87,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
+  // Fills the 720×320 panel so the GitLab browser can use the whole window.
+  gitlab: { height: 308, botX: 0, botY: 0, botDiameter: 0, agentMode: "none" },
 };
 
 // The upload views above are only the fallback geometry. Once a file is actually
@@ -111,7 +114,8 @@ export function islandSize(
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
       const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
-      return { w: EXPANDED_W, h };
+      const w = view === "gitlab" ? PANEL_W : EXPANDED_W;
+      return { w, h };
     }
   }
 }

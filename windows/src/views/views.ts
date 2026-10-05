@@ -11,6 +11,7 @@ import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildGitlab } from "./gitlab";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -35,6 +36,8 @@ export interface ViewHost {
   focus?(): void;
   /** Called every frame while the view is on screen. */
   tick?(nowMs: number): void;
+  /** Escape. True when the view handled it (went back a screen). */
+  escape?(): boolean;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -157,6 +160,9 @@ function buildOverview(actions: ViewActions): ViewHost {
       State.notify();
     },
     openSettings: () => actions.openSettingsWindow(),
+    openGitlab() {
+      actions.setView("gitlab");
+    },
   };
 
   return {
@@ -507,5 +513,6 @@ export function buildViews(
   map.set("mail", buildPlaceholder(t("mail.unavailable"), ""));
   map.set("searching", buildPlaceholder(t("search.busy"), ""));
   map.set("result", buildPlaceholder(t("search.result"), ""));
+  map.set("gitlab", buildGitlab(() => actions.setView(State.defaultView())));
   return map;
 }

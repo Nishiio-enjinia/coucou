@@ -48,7 +48,8 @@ async function main() {
   hasKey = (await Bridge.secretPresent("anthropic-api-key")) ?? false;
 
   const keys = [
-    "stripe-api-key", "github-token", "gitlab-url", "gitlab-token", "vercel-token",
+    "stripe-api-key", "github-token", "gitlab-url", "gitlab-token",
+    "jenkins-url", "jenkins-user", "jenkins-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
   ];
   for (const k of keys) secretsPresent[k] = (await Bridge.secretPresent(k)) ?? false;
@@ -269,7 +270,7 @@ function apiSection(hasKey: boolean): HTMLElement {
   let paintGen = 0;
 
   function draw() {
-    const gen = ++paintGen;
+    paintGen += 1;
     const ollama = settings.chatProvider === "ollama";
     const head = section.querySelector("h2")!;
     clear(head);
@@ -485,6 +486,12 @@ function integrationDefs(): IntegrationDef[] {
       { key: "gitlab-url", label: t("int.instanceUrl"), placeholder: "https://gitlab.com", secret: false },
       { key: "gitlab-token", label: t("int.token"), placeholder: "glpat-…", secret: true },
     ] },
+  { id: "integration_jenkins", name: "Jenkins", color: "#D33833",
+    fields: [
+      { key: "jenkins-url", label: t("int.instanceUrl"), placeholder: "https://jenkins.example.com", secret: false },
+      { key: "jenkins-user", label: t("int.user"), placeholder: "admin", secret: false },
+      { key: "jenkins-token", label: t("int.token"), placeholder: "…", secret: true },
+    ] },
   { id: "integration_vercel", name: "Vercel", color: "#7C5CFF",
     fields: [{ key: "vercel-token", label: t("int.token"), placeholder: "…", secret: true }] },
   { id: "integration_n8n", name: "n8n", color: "#F29B38",
@@ -560,6 +567,9 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
     }
     if (def.id === "integration_gitlab") {
       rows.append(h("div", { class: "hint", text: t("int.gitlabHint") }));
+    }
+    if (def.id === "integration_jenkins") {
+      rows.append(h("div", { class: "hint", text: t("int.jenkinsHint") }));
     }
 
     list.append(

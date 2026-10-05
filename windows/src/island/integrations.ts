@@ -4,7 +4,7 @@
 
 import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 import type { Island } from "./island";
 
 /** Which Credential Manager key backs each pill. */
@@ -12,6 +12,7 @@ const KEY_FOR: Record<string, string> = {
   integration_stripe: "stripe-api-key",
   integration_github: "github-token",
   integration_gitlab: "gitlab-token",
+  integration_jenkins: "jenkins-token",
   integration_vercel: "vercel-token",
   integration_n8n: "n8n-api-key",
   integration_resend: "resend-api-key",
@@ -37,6 +38,12 @@ export async function refreshConfigured() {
   if (gitlab) {
     const url = (await Bridge.secretPresent("gitlab-url")) ?? false;
     gitlab.configured = gitlab.configured && url;
+  }
+  const jenkins = State.integrations.integration_jenkins;
+  if (jenkins) {
+    const url = (await Bridge.secretPresent("jenkins-url")) ?? false;
+    const user = (await Bridge.secretPresent("jenkins-user")) ?? false;
+    jenkins.configured = jenkins.configured && url && user;
   }
   const hooks = State.settings.hooksInstalled;
   const claude = State.integrations.integration_claude ?? {
@@ -67,34 +74,72 @@ function handle(island: Island, update: IntegrationUpdate) {
   if (event) {
     const task = State.tasks.find((t) => t.id === update.id);
     if (task) {
-      task.state = event.success ? "finished" : "error";
+      const phase =
+        event.phase === "working" || event.phase === "finished" || event.phase === "error"
+          ? event.phase
+          : event.success
+            ? "finished"
+            : "error";
+      const success = phase === "finished";
+      task.state = phase === "working" ? "working" : success ? "finished" : "error";
       task.steps = event.detail ? [event.label, event.detail] : [event.label];
       task.stepIndex = task.steps.length - 1;
-      if (State.focusId !== update.id) {
-        task.pillBadge = event.success ? "finished" : "error";
+      if (phase !== "working" && State.focusId !== update.id) {
+        task.pillBadge = success ? "finished" : "error";
       }
-      Sound.play(event.success ? "finish" : "error");
+      Sound.play(phase === "working" ? "work" : success ? "finish" : "error");
       // Same as the Swift pollers: show the compact island so the badge is seen,
       // but never steal the screen for a successful deploy.
       island.reveal();
 
-      const existing = clearTimers.get(update.id);
-      if (existing != null) window.clearTimeout(existing);
-      clearTimers.set(
-        update.id,
-        window.setTimeout(() => {
-          clearTimers.delete(update.id);
-          const t = State.tasks.find((x) => x.id === update.id);
-          if (!t || (t.state !== "finished" && t.state !== "error")) return;
-          t.state = "idle";
-          t.steps = [];
-          t.stepIndex = 0;
-          t.pillBadge = null;
-          State.notify();
-        }, 60_000),
-      );
+      if (phase !== "working") {
+        const existing = clearTimers.get(update.id);
+        if (existing != null) window.clearTimeout(existing);
+        clearTimers.set(
+          update.id,
+          window.setTimeout(() => {
+            clearTimers.delete(update.id);
+            const t = State.tasks.find((x) => x.id === update.id);
+            if (!t || (t.state !== "finished" && t.state !== "error")) return;
+            t.state = "idle";
+            t.steps = [];
+            t.stepIndex = 0;
+            t.pillBadge = null;
+            State.notify();
+          }, 60_000),
+        );
+      }
     }
   }
 
+  if (update.id === "integration_jenkins" && !update.error) {
+    const task = State.tasks.find((t) => t.id === update.id);
+    if (task) syncJenkins(task, update.data);
+  }
+
   State.notify();
+}
+
+/** Keeps the Jenkins pill on the live builds between alerts. A sound fires only on a transition. */
+function syncJenkins(task: AgentTask, data: Record<string, unknown>) {
+  const builds = Array.isArray(data.builds) ? (data.builds as Record<string, unknown>[]) : [];
+  const steps = builds
+    .filter((build) => build.phase === "building" || build.phase === "queued")
+    .slice(0, 3)
+    .map((build) => {
+      const name = String(build.name ?? "Jenkins");
+      const number = typeof build.number === "number" ? ` #${build.number}` : "";
+      return `${name}${number}`;
+    });
+  if (steps.length > 0) {
+    task.state = "working";
+    task.steps = steps;
+    task.stepIndex = 0;
+    return;
+  }
+  if (task.state === "working") {
+    task.state = "idle";
+    task.steps = [];
+    task.stepIndex = 0;
+  }
 }

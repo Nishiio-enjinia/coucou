@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -39,6 +39,9 @@ pub struct IntegrationEvent {
     pub success: bool,
     pub label: String,
     pub detail: Option<String>,
+    /// "working", "finished" or "error". Absent means finished when `success`, error otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<&'static str>,
 }
 
 fn emit(app: &AppHandle, update: IntegrationUpdate) {
@@ -68,6 +71,7 @@ pub fn start(app: AppHandle) {
     spawn(app.clone(), "integration_resend", 6, 60, poll_resend);
     spawn(app.clone(), "integration_github", 7, 300, poll_github);
     spawn(app.clone(), "integration_gitlab", 8, 60, poll_gitlab);
+    spawn(app.clone(), "integration_jenkins", 4, 15, poll_jenkins);
     spawn(app.clone(), "integration_calcom", 8, 300, poll_calcom);
     spawn(app, "integration_notion", 9, 300, poll_notion);
 }
@@ -110,6 +114,7 @@ pub async fn poll_once(app: AppHandle, id: &str) {
         "integration_stripe" => poll_stripe(app).await,
         "integration_github" => poll_github(app).await,
         "integration_gitlab" => poll_gitlab(app).await,
+        "integration_jenkins" => poll_jenkins(app).await,
         "integration_vercel" => poll_vercel(app).await,
         "integration_n8n" => poll_n8n(app).await,
         "integration_resend" => poll_resend(app).await,
@@ -251,7 +256,7 @@ async fn poll_stripe(app: AppHandle) {
                 let cents = payments[0].get("amount").and_then(Value::as_i64).unwrap_or(0);
                 format!("{:.2}", cents as f64 / 100.0)
             });
-        Some(IntegrationEvent { success: true, label, detail: None })
+        Some(IntegrationEvent { success: true, label, detail: None, phase: None })
     } else {
         None
     };
@@ -789,7 +794,7 @@ async fn poll_gitlab(app: AppHandle) {
     });
     let event = alert.map(|item| {
         let (label, detail) = gitlab_alert(item);
-        IntegrationEvent { success: !item.failure, label, detail }
+        IntegrationEvent { success: !item.failure, label, detail, phase: None }
     });
     let shown: Vec<Value> = items.iter().take(8).map(|item| gitlab_json(&base, item)).collect();
     log::line(format!("gitlab {} event(s)", shown.len()));
@@ -800,6 +805,613 @@ async fn poll_gitlab(app: AppHandle) {
         error: None,
         event,
     });
+}
+
+// ── GitLab browse ─────────────────────────────────────────────────────────────
+//
+// On-demand reads for the full-width browser: projects, commits, one commit's
+// full message, pipelines and their jobs. The token stays in the credential
+// store and is only sent to the instance URL the user configured.
+
+const BROWSE_PAGE: u32 = 40;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitlabBrowseRequest {
+    pub kind: String,
+    #[serde(default)]
+    pub project_id: Option<i64>,
+    #[serde(default)]
+    pub pipeline_id: Option<i64>,
+    #[serde(default)]
+    pub page: Option<u32>,
+}
+
+pub async fn gitlab_browse(req: GitlabBrowseRequest) -> Result<Value, String> {
+    let token = secrets::get("gitlab-token").ok_or_else(|| "GitLab token missing".to_string())?;
+    let raw = secrets::get("gitlab-url").ok_or_else(|| "Instance URL missing".to_string())?;
+    let base = gitlab_base(&raw)?;
+    let http = gitlab_http();
+    let page = req.page.unwrap_or(1).clamp(1, 10);
+    match req.kind.as_str() {
+        "projects" => gitlab_list(&http, &token, &format!(
+            "{base}/api/v4/projects?membership=true&simple=true&archived=false&order_by=last_activity_at&sort=desc&per_page={BROWSE_PAGE}&page={page}"
+        ), |item| map_gitlab_project(item, &base)).await,
+        "commits" => {
+            let id = positive_id(req.project_id)?;
+            gitlab_list(&http, &token, &format!(
+                "{base}/api/v4/projects/{id}/repository/commits?per_page={BROWSE_PAGE}&page={page}"
+            ), |item| map_gitlab_commit(item, &base)).await
+        }
+        "pipelines" => {
+            let id = positive_id(req.project_id)?;
+            gitlab_list(&http, &token, &format!(
+                "{base}/api/v4/projects/{id}/pipelines?order_by=updated_at&sort=desc&per_page={BROWSE_PAGE}&page={page}"
+            ), |item| map_gitlab_pipeline(item, &base)).await
+        }
+        "jobs" => {
+            let id = positive_id(req.project_id)?;
+            let pipeline = positive_id(req.pipeline_id)?;
+            gitlab_list(&http, &token, &format!(
+                "{base}/api/v4/projects/{id}/pipelines/{pipeline}/jobs?per_page=100"
+            ), |item| map_gitlab_job(item, &base)).await
+        }
+        _ => Err("Unknown GitLab screen".into()),
+    }
+}
+
+fn positive_id(id: Option<i64>) -> Result<i64, String> {
+    match id {
+        Some(id) if id > 0 => Ok(id),
+        _ => Err("Missing GitLab id".into()),
+    }
+}
+
+async fn gitlab_list(
+    http: &reqwest::Client,
+    token: &str,
+    url: &str,
+    map: impl Fn(&Value) -> Option<Value>,
+) -> Result<Value, String> {
+    let response = http
+        .get(url)
+        .header("PRIVATE-TOKEN", token)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("No connection: {err}"))?;
+    let status = response.status();
+    if status.is_redirection() {
+        return Err("GitLab redirected the request".into());
+    }
+    if !status.is_success() {
+        log::line(format!("gitlab browse HTTP {}", status.as_u16()));
+        return Err(status_error(status.as_u16(), "Token needs the read_api scope"));
+    }
+    let json: Value = response.json().await.map_err(|_| "Unexpected GitLab response".to_string())?;
+    let Value::Array(items) = json else {
+        return Err("Unexpected GitLab response".into());
+    };
+    Ok(Value::Array(items.iter().filter_map(map).collect()))
+}
+
+/// Text safe to show. No control characters, capped so one field cannot fill the island.
+fn plain(raw: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut n = 0;
+    for ch in raw.chars() {
+        if n >= max {
+            break;
+        }
+        if ch.is_control() && ch != '\n' && ch != '\t' {
+            continue;
+        }
+        out.push(ch);
+        n += 1;
+    }
+    out
+}
+
+fn hosted_url(base: &str, url: &str) -> Option<String> {
+    let rest = url.strip_prefix(base)?;
+    if !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('?') {
+        return None;
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    Some(url.to_string())
+}
+
+fn map_gitlab_project(v: &Value, base: &str) -> Option<Value> {
+    let id = json_i64(v.get("id")).filter(|id| *id > 0)?;
+    let path = plain(json_str(v, "path_with_namespace"), 240);
+    if path.is_empty() {
+        return None;
+    }
+    let name = plain(json_str(v, "name"), 120);
+    let web = v.get("web_url").and_then(Value::as_str).and_then(|url| hosted_url(base, url));
+    let url = web.or_else(|| gitlab_url(base, &path, &None));
+    Some(json!({
+        "id": id,
+        "name": if name.is_empty() { path.clone() } else { name },
+        "path": path,
+        "branch": plain(json_str(v, "default_branch"), 120),
+        "activityAt": plain(json_str(v, "last_activity_at"), 40),
+        "url": url,
+    }))
+}
+
+fn map_gitlab_commit(v: &Value, base: &str) -> Option<Value> {
+    let sha = json_str(v, "id");
+    if !safe_sha(sha) {
+        return None;
+    }
+    let title = plain(json_str(v, "title"), 500);
+    let message = plain(json_str(v, "message"), 8000);
+    let author = plain(json_str(v, "author_name"), 200);
+    let email = plain_email(json_str(v, "author_email"));
+    let web = v.get("web_url").and_then(Value::as_str).and_then(|url| hosted_url(base, url));
+    Some(json!({
+        "sha": sha,
+        "shortId": &sha[..8],
+        "title": if title.is_empty() { message.lines().next().unwrap_or("").to_string() } else { title },
+        "message": message,
+        "author": author,
+        "email": email,
+        "createdAt": plain(json_str(v, "authored_date"), 40),
+        "url": web,
+    }))
+}
+
+fn plain_email(raw: &str) -> String {
+    let email = plain(raw, 120);
+    if email.contains(' ') || email.contains('<') || !email.contains('@') {
+        return String::new();
+    }
+    email
+}
+
+fn map_gitlab_pipeline(v: &Value, base: &str) -> Option<Value> {
+    let id = json_i64(v.get("id")).filter(|id| *id > 0)?;
+    let sha = json_str(v, "sha");
+    let short = if safe_sha(sha) { sha[..8].to_string() } else { String::new() };
+    let web = v.get("web_url").and_then(Value::as_str).and_then(|url| hosted_url(base, url));
+    Some(json!({
+        "id": id,
+        "status": pipeline_status(json_str(v, "status")),
+        "ref": plain(json_str(v, "ref"), 160),
+        "sha": short,
+        "createdAt": plain(json_str(v, "created_at"), 40),
+        "url": web,
+    }))
+}
+
+fn pipeline_status(raw: &str) -> &'static str {
+    match raw {
+        "created" => "created",
+        "waiting_for_resource" => "waiting_for_resource",
+        "preparing" => "preparing",
+        "pending" => "pending",
+        "running" => "running",
+        "success" => "success",
+        "failed" => "failed",
+        "canceled" => "canceled",
+        "canceling" => "canceling",
+        "skipped" => "skipped",
+        "manual" => "manual",
+        "scheduled" => "scheduled",
+        _ => "other",
+    }
+}
+
+fn map_gitlab_job(v: &Value, base: &str) -> Option<Value> {
+    let id = json_i64(v.get("id")).filter(|id| *id > 0)?;
+    let name = plain(json_str(v, "name"), 160);
+    if name.is_empty() {
+        return None;
+    }
+    let web = v.get("web_url").and_then(Value::as_str).and_then(|url| hosted_url(base, url));
+    Some(json!({
+        "id": id,
+        "name": name,
+        "stage": plain(json_str(v, "stage"), 80),
+        "status": pipeline_status(json_str(v, "status")),
+        "url": web,
+    }))
+}
+
+// ── Jenkins ───────────────────────────────────────────────────────────────────
+//
+// One instance, whichever URL the user stored. Every 15 s Coucou reads the job
+// tree and the queue. A build alerts once per transition: queued, started,
+// success, failure, unstable, aborted. The first poll only fills the card.
+
+const JENKINS_RECENT_MS: i64 = 24 * 60 * 60 * 1000;
+
+#[derive(Clone)]
+struct JenkinsRow {
+    key: String,
+    signature: String,
+    phase: &'static str,
+    name: String,
+    number: Option<i64>,
+    url: String,
+    timestamp: i64,
+}
+
+struct JenkinsMemory {
+    base: String,
+    primed: bool,
+    jobs: std::collections::HashMap<String, String>,
+}
+
+static JENKINS_MEMORY: std::sync::LazyLock<Mutex<JenkinsMemory>> = std::sync::LazyLock::new(|| {
+    Mutex::new(JenkinsMemory {
+        base: String::new(),
+        primed: false,
+        jobs: std::collections::HashMap::new(),
+    })
+});
+
+fn jenkins_error(app: &AppHandle, error: String) {
+    emit(app, IntegrationUpdate {
+        id: "integration_jenkins",
+        data: json!({}),
+        error: Some(error),
+        event: None,
+    });
+}
+
+fn jenkins_http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
+/// `https://jenkins.example.com` or `https://ci.example.com/jenkins`. `/api` is stripped.
+fn jenkins_base(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Instance URL missing".into());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|_| "Instance URL is not a URL".to_string())?;
+    if url.scheme() != "https" && url.scheme() != "http" {
+        return Err("Instance URL must start with http:// or https://".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Put the token in the token field, not in the URL".into());
+    }
+    if url.host_str().is_none() {
+        return Err("Instance URL has no host".into());
+    }
+    let mut path = url.path().trim_end_matches('/').to_string();
+    for suffix in ["/api/json", "/login", "/api"] {
+        if let Some(stripped) = path.strip_suffix(suffix) {
+            path = stripped.trim_end_matches('/').to_string();
+            break;
+        }
+    }
+    let mut base = url.origin().ascii_serialization();
+    if !path.is_empty() && path != "/" {
+        base.push_str(&path);
+    }
+    Ok(base)
+}
+
+fn jenkins_jobs_tree(depth: usize) -> String {
+    let fields =
+        "name,fullName,url,color,lastBuild[number,url,result,building,timestamp,duration,fullDisplayName]";
+    if depth == 0 {
+        return fields.to_string();
+    }
+    format!("{fields},jobs[{}]", jenkins_jobs_tree(depth - 1))
+}
+
+fn jenkins_phase(build: &Value) -> &'static str {
+    if build.get("building").and_then(Value::as_bool) == Some(true) {
+        return "building";
+    }
+    match build.get("result").and_then(Value::as_str).unwrap_or("") {
+        "SUCCESS" => "success",
+        "FAILURE" => "failure",
+        "UNSTABLE" => "unstable",
+        "ABORTED" => "aborted",
+        "NOT_BUILT" => "notbuilt",
+        _ => "unknown",
+    }
+}
+
+fn jenkins_alert_phase(phase: &str) -> Option<&'static str> {
+    match phase {
+        "building" | "queued" => Some("working"),
+        "success" => Some("finished"),
+        "failure" | "unstable" | "aborted" => Some("error"),
+        _ => None,
+    }
+}
+
+fn jenkins_keep(phase: &str, timestamp: i64, now: i64) -> bool {
+    if matches!(phase, "unknown" | "notbuilt") {
+        return false;
+    }
+    if matches!(phase, "building" | "queued") {
+        return true;
+    }
+    timestamp > 0 && now.saturating_sub(timestamp) <= JENKINS_RECENT_MS
+}
+
+fn jenkins_short(name: &str) -> String {
+    name.rsplit(['/', '»'])
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_string()
+}
+
+fn allowed_jenkins_url(base: &str, raw: &str) -> Option<String> {
+    if raw.is_empty() {
+        return None;
+    }
+    let base = reqwest::Url::parse(base).ok()?;
+    let url = reqwest::Url::parse(raw).ok()?;
+    if url.scheme() != base.scheme()
+        || url.host() != base.host()
+        || url.port_or_known_default() != base.port_or_known_default()
+    {
+        return None;
+    }
+    Some(url.to_string())
+}
+
+fn map_jenkins_job(job: &Value) -> Option<JenkinsRow> {
+    let build = job.get("lastBuild")?;
+    if !build.is_object() {
+        return None;
+    }
+    let number = json_i64(build.get("number")).filter(|n| *n > 0)?;
+    let phase = jenkins_phase(build);
+    let name = job
+        .get("fullName")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| job.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()))?;
+    let timestamp = json_i64(build.get("timestamp")).unwrap_or(0);
+    Some(JenkinsRow {
+        key: name.to_string(),
+        signature: format!("{number}:{phase}"),
+        phase,
+        name: name.to_string(),
+        number: Some(number),
+        url: build.get("url").and_then(Value::as_str).unwrap_or("").to_string(),
+        timestamp,
+    })
+}
+
+fn map_jenkins_queue(item: &Value) -> Option<JenkinsRow> {
+    let id = json_i64(item.get("id")).filter(|n| *n > 0)?;
+    let task = item.get("task")?;
+    let name = task
+        .get("fullDisplayName")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| task.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()))?;
+    Some(JenkinsRow {
+        key: format!("queue:{id}"),
+        signature: "queued".into(),
+        phase: "queued",
+        name: name.to_string(),
+        number: None,
+        url: task.get("url").and_then(Value::as_str).unwrap_or("").to_string(),
+        timestamp: json_i64(item.get("inQueueSince")).unwrap_or(0),
+    })
+}
+
+fn collect_jenkins_jobs(node: &Value, out: &mut Vec<JenkinsRow>) {
+    let Some(jobs) = node.get("jobs").and_then(Value::as_array) else { return };
+    for job in jobs {
+        if let Some(row) = map_jenkins_job(job) {
+            out.push(row);
+        }
+        collect_jenkins_jobs(job, out);
+    }
+}
+
+fn dedup_jenkins(rows: Vec<JenkinsRow>) -> Vec<JenkinsRow> {
+    let mut index = std::collections::HashMap::<String, usize>::new();
+    let mut out: Vec<JenkinsRow> = Vec::new();
+    for row in rows {
+        let number = row.number.unwrap_or(0);
+        if let Some(&at) = index.get(&row.key) {
+            if number >= out[at].number.unwrap_or(0) {
+                out[at] = row;
+            }
+        } else {
+            index.insert(row.key.clone(), out.len());
+            out.push(row);
+        }
+    }
+    out
+}
+
+fn jenkins_changes(
+    primed: bool,
+    previous: &std::collections::HashMap<String, String>,
+    rows: &[JenkinsRow],
+) -> Vec<usize> {
+    if !primed {
+        return Vec::new();
+    }
+    let mut idxs: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            jenkins_alert_phase(row.phase).is_some()
+                && previous.get(&row.key).map(String::as_str) != Some(row.signature.as_str())
+        })
+        .map(|(i, _)| i)
+        .collect();
+    idxs.sort_by_key(|&i| rows[i].timestamp);
+    if idxs.len() > 8 {
+        idxs = idxs.split_off(idxs.len() - 8);
+    }
+    idxs
+}
+
+fn jenkins_json(base: &str, row: &JenkinsRow) -> Value {
+    json!({
+        "name": row.name,
+        "number": row.number,
+        "phase": row.phase,
+        "timestamp": row.timestamp,
+        "url": allowed_jenkins_url(base, &row.url),
+    })
+}
+
+fn jenkins_event(row: &JenkinsRow) -> Option<IntegrationEvent> {
+    let phase = jenkins_alert_phase(row.phase)?;
+    let label = jenkins_short(&row.name);
+    let label = if label.is_empty() { "Jenkins".to_string() } else { label };
+    let status = crate::i18n::t(&format!("jenkins.{}", row.phase));
+    let detail = match row.number {
+        Some(n) => Some(format!("#{n} · {status}")),
+        None => Some(status),
+    };
+    Some(IntegrationEvent {
+        success: phase == "finished",
+        label,
+        detail,
+        phase: Some(phase),
+    })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+async fn jenkins_get(http: &reqwest::Client, url: &str, auth: &str, tree: &str) -> Result<Value, String> {
+    let response = http
+        .get(url)
+        .query(&[("tree", tree)])
+        .header("Authorization", auth)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("No connection: {err}"))?;
+    let status = response.status();
+    if status.is_redirection() {
+        return Err("Jenkins redirected the request".into());
+    }
+    if !status.is_success() {
+        log::line(format!("jenkins HTTP {}", status.as_u16()));
+        return Err(status_error(
+            status.as_u16(),
+            "Token needs Overall/Read and Job/Read",
+        ));
+    }
+    response
+        .json()
+        .await
+        .map_err(|_| "Unexpected Jenkins response".to_string())
+}
+
+async fn poll_jenkins(app: AppHandle) {
+    let Some(token) = secrets::get("jenkins-token") else { return };
+    let Some(raw_base) = secrets::get("jenkins-url") else {
+        jenkins_error(&app, "Instance URL missing".into());
+        return;
+    };
+    let Some(user) = secrets::get("jenkins-user") else {
+        jenkins_error(&app, "Jenkins user missing".into());
+        return;
+    };
+    let base = match jenkins_base(&raw_base) {
+        Ok(base) => base,
+        Err(err) => {
+            jenkins_error(&app, err);
+            return;
+        }
+    };
+    let auth = format!(
+        "Basic {}",
+        crate::claude::base64_for(format!("{user}:{token}").as_bytes())
+    );
+    let http = jenkins_http();
+    let tree = format!("jobs[{}]", jenkins_jobs_tree(3));
+    let root = match jenkins_get(&http, &format!("{base}/api/json"), &auth, &tree).await {
+        Ok(root) => root,
+        Err(err) => {
+            jenkins_error(&app, err);
+            return;
+        }
+    };
+
+    let mut rows = Vec::new();
+    collect_jenkins_jobs(&root, &mut rows);
+    if let Ok(queue) = jenkins_get(&http, &format!("{base}/queue/api/json"), &auth, "items[id,why,inQueueSince,task[name,fullDisplayName,url]]").await {
+        if let Some(items) = queue.get("items").and_then(Value::as_array) {
+            rows.extend(items.iter().filter_map(map_jenkins_queue));
+        }
+    } else {
+        log::line("jenkins queue skipped");
+    }
+
+    let now = now_ms();
+    rows.retain(|row| jenkins_keep(row.phase, row.timestamp, now));
+    let mut rows = dedup_jenkins(rows);
+    rows.sort_by(|a, b| {
+        let rank = |phase: &str| match phase {
+            "building" => 0,
+            "queued" => 1,
+            _ => 2,
+        };
+        rank(a.phase).cmp(&rank(b.phase)).then(b.timestamp.cmp(&a.timestamp))
+    });
+
+    let running = rows.iter().filter(|row| matches!(row.phase, "building" | "queued")).count();
+    let alerts = {
+        let mut memory = JENKINS_MEMORY.lock().unwrap();
+        if memory.base != base {
+            memory.base = base.clone();
+            memory.primed = false;
+            memory.jobs.clear();
+        }
+        let idxs = jenkins_changes(memory.primed, &memory.jobs, &rows);
+        memory.jobs.clear();
+        for row in &rows {
+            memory.jobs.insert(row.key.clone(), row.signature.clone());
+        }
+        memory.primed = true;
+        idxs
+    };
+
+    let shown: Vec<Value> = rows.iter().take(12).map(|row| jenkins_json(&base, row)).collect();
+    let data = json!({ "webUrl": base, "running": running, "builds": shown });
+    log::line(format!("jenkins {} build(s), {} alert(s)", shown.len(), alerts.len()));
+
+    if alerts.is_empty() {
+        emit(&app, IntegrationUpdate {
+            id: "integration_jenkins",
+            data,
+            error: None,
+            event: None,
+        });
+        return;
+    }
+    for index in alerts {
+        let Some(event) = jenkins_event(&rows[index]) else { continue };
+        emit(&app, IntegrationUpdate {
+            id: "integration_jenkins",
+            data: data.clone(),
+            error: None,
+            event: Some(event),
+        });
+    }
 }
 
 // ── Vercel ────────────────────────────────────────────────────────────────────
@@ -863,6 +1475,7 @@ async fn poll_vercel(app: AppHandle) {
             success,
             label: latest.get("projectName")?.as_str()?.to_string(),
             detail: None,
+            phase: None,
         })
     });
 
@@ -1170,7 +1783,7 @@ async fn poll_n8n(app: AppHandle) {
         id: "integration_n8n",
         data: json!({ "workflow": name, "status": status }),
         error: None,
-        event: Some(IntegrationEvent { success, label: name, detail }),
+        event: Some(IntegrationEvent { success, label: name, detail, phase: None }),
     });
 }
 
@@ -1316,5 +1929,151 @@ mod gitlab_tests {
             "note": { "body": "assigned to @root", "system": true, "noteable_type": "Issue", "noteable_iid": 4 }
         });
         assert!(map_gitlab_event(&note).is_none());
+    }
+
+    #[test]
+    fn browse_keeps_the_full_commit_title_and_drops_foreign_urls() {
+        let long = format!("{} stays whole", "x".repeat(100));
+        let commit = json!({
+            "id": "c5feabde2d8cd023215af4d2ceeb7a64839fc428",
+            "title": long,
+            "message": format!("{long}\n\nThe body stays with the title."),
+            "author_name": "Ada Lovelace",
+            "author_email": "ada@example.com",
+            "authored_date": "2015-12-04T10:33:58.000Z",
+            "web_url": "https://evil.example/commit/c5feabde"
+        });
+        let item = map_gitlab_commit(&commit, "https://gitlab.example.com").unwrap();
+        assert_eq!(item["title"], long);
+        assert!(item["message"].as_str().unwrap().contains("The body stays"));
+        assert_eq!(item["author"], "Ada Lovelace");
+        assert!(item["url"].is_null());
+
+        let project = json!({
+            "id": 15,
+            "name": "App",
+            "path_with_namespace": "group/app",
+            "default_branch": "main",
+            "last_activity_at": "2015-12-04T10:33:58.089Z",
+            "web_url": "https://gitlab.example.com/group/app"
+        });
+        let row = map_gitlab_project(&project, "https://gitlab.example.com").unwrap();
+        assert_eq!(row["path"], "group/app");
+        assert_eq!(row["url"], "https://gitlab.example.com/group/app");
+        assert!(map_gitlab_commit(&json!({"id": "not-a-sha", "title": "x"}), "https://gitlab.example.com").is_none());
+    }
+}
+
+#[cfg(test)]
+mod jenkins_tests {
+    use super::*;
+
+    #[test]
+    fn instance_url_keeps_a_context_path_and_drops_the_api_suffix() {
+        assert_eq!(
+            jenkins_base("https://jenkins.example.com").as_deref(),
+            Ok("https://jenkins.example.com")
+        );
+        assert_eq!(
+            jenkins_base("https://ci.example.com/jenkins/api/json").as_deref(),
+            Ok("https://ci.example.com/jenkins")
+        );
+        assert_eq!(
+            jenkins_base("http://127.0.0.1:8080/").as_deref(),
+            Ok("http://127.0.0.1:8080")
+        );
+        assert!(jenkins_base("https://user:token@jenkins.example.com").is_err());
+        assert!(jenkins_base("file:///tmp/jenkins").is_err());
+    }
+
+    #[test]
+    fn phase_reads_building_before_the_result() {
+        assert_eq!(
+            jenkins_phase(&json!({"building": true, "result": null})),
+            "building"
+        );
+        assert_eq!(jenkins_phase(&json!({"building": false, "result": "SUCCESS"})), "success");
+        assert_eq!(jenkins_phase(&json!({"building": false, "result": "FAILURE"})), "failure");
+        assert_eq!(jenkins_phase(&json!({"building": false, "result": "UNSTABLE"})), "unstable");
+        assert_eq!(jenkins_phase(&json!({"building": false, "result": "ABORTED"})), "aborted");
+        assert_eq!(jenkins_alert_phase("queued"), Some("working"));
+        assert_eq!(jenkins_alert_phase("success"), Some("finished"));
+        assert_eq!(jenkins_alert_phase("failure"), Some("error"));
+        assert_eq!(jenkins_alert_phase("notbuilt"), None);
+    }
+
+    #[test]
+    fn nested_folders_keep_the_leaf_build_and_drop_foreign_urls() {
+        let root = json!({
+            "jobs": [{
+                "name": "folder",
+                "fullName": "folder",
+                "jobs": [{
+                    "name": "app",
+                    "fullName": "folder/app",
+                    "lastBuild": {
+                        "number": 12,
+                        "building": true,
+                        "result": null,
+                        "timestamp": 1_700_000_000_000_i64,
+                        "url": "https://jenkins.example.com/job/folder/job/app/12/"
+                    }
+                }]
+            }]
+        });
+        let mut rows = Vec::new();
+        collect_jenkins_jobs(&root, &mut rows);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "folder/app");
+        assert_eq!(rows[0].phase, "building");
+        assert_eq!(rows[0].signature, "12:building");
+        assert_eq!(
+            allowed_jenkins_url("https://jenkins.example.com", &rows[0].url).as_deref(),
+            Some("https://jenkins.example.com/job/folder/job/app/12/")
+        );
+        assert!(allowed_jenkins_url("https://jenkins.example.com", "https://evil.example/job/1").is_none());
+    }
+
+    #[test]
+    fn first_poll_is_silent_and_a_result_change_alerts_once() {
+        let building = JenkinsRow {
+            key: "folder/app".into(),
+            signature: "12:building".into(),
+            phase: "building",
+            name: "folder/app".into(),
+            number: Some(12),
+            url: String::new(),
+            timestamp: 10,
+        };
+        let mut previous = std::collections::HashMap::new();
+        assert!(jenkins_changes(false, &previous, &[building.clone()]).is_empty());
+        previous.insert(building.key.clone(), building.signature.clone());
+
+        let success = JenkinsRow {
+            signature: "12:success".into(),
+            phase: "success",
+            timestamp: 20,
+            ..building.clone()
+        };
+        let changed = jenkins_changes(true, &previous, &[success.clone()]);
+        assert_eq!(changed, vec![0]);
+        let event = jenkins_event(&success).unwrap();
+        assert_eq!(event.phase, Some("finished"));
+        assert!(event.success);
+        assert_eq!(event.label, "app");
+        assert!(event.detail.as_deref().unwrap_or("").starts_with("#12"));
+
+        previous.insert(success.key.clone(), success.signature.clone());
+        assert!(jenkins_changes(true, &previous, &[success]).is_empty());
+    }
+
+    #[test]
+    fn old_builds_drop_but_a_running_one_stays() {
+        let now = 2_000_000_000_000_i64;
+        assert!(jenkins_keep("building", 0, now));
+        assert!(jenkins_keep("queued", 0, now));
+        assert!(jenkins_keep("success", now - 60_000, now));
+        assert!(!jenkins_keep("failure", now - JENKINS_RECENT_MS - 1, now));
+        assert!(!jenkins_keep("unknown", now, now));
     }
 }
